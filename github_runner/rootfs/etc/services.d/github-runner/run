@@ -1,0 +1,31 @@
+#!/usr/bin/with-contenv bashio
+# Map Home Assistant app options to process environment.
+# Options are always written to /data/options.json — read them directly so we
+# do not depend on the Supervisor HTTP API at startup.
+set -euo pipefail
+
+OPTIONS_FILE="${OPTIONS_FILE:-/data/options.json}"
+export DATA_DIR="${DATA_DIR:-/data}"
+export APP_VERSION="${APP_VERSION:-0.2.0}"
+
+if [[ -f "${OPTIONS_FILE}" ]]; then
+  export LOG_LEVEL
+  LOG_LEVEL="$(jq -r '.log_level // "info"' "${OPTIONS_FILE}")"
+  export RUNNER_IMAGE
+  RUNNER_IMAGE="$(jq -r '.runner_image // "myoung34/github-runner:latest"' "${OPTIONS_FILE}")"
+  if jq -e '.mount_docker_sock == true' "${OPTIONS_FILE}" >/dev/null 2>&1; then
+    export MOUNT_DOCKER_SOCK=true
+  else
+    export MOUNT_DOCKER_SOCK=false
+  fi
+  PAT="$(jq -r '.github_pat // empty' "${OPTIONS_FILE}")"
+  if [[ -n "${PAT}" && "${PAT}" != "null" ]]; then
+    export GITHUB_PAT="${PAT}"
+  fi
+else
+  export LOG_LEVEL="${LOG_LEVEL:-info}"
+  export RUNNER_IMAGE="${RUNNER_IMAGE:-myoung34/github-runner:latest}"
+  export MOUNT_DOCKER_SOCK="${MOUNT_DOCKER_SOCK:-false}"
+fi
+
+exec /usr/bin/github-runner-addon

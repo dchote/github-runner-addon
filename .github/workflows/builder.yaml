@@ -1,0 +1,121 @@
+name: Builder
+
+env:
+  MONITORED_FILES: "config.yaml Dockerfile rootfs go.mod go.sum cmd internal api frontend"
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test and lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: github_runner/go.mod
+          cache-dependency-path: github_runner/go.sum
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: github_runner/frontend/package-lock.json
+
+      - name: Go vet and test
+        working-directory: github_runner
+        run: |
+          go vet ./cmd/... ./internal/... ./api/...
+          go test ./cmd/... ./internal/... ./api/...
+
+      - name: Frontend lint and unit tests
+        working-directory: github_runner/frontend
+        run: |
+          npm ci
+          npm run lint
+          npm test
+
+  init:
+    name: Initialize builds
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+      changed_apps: ${{ steps.filter.outputs.changed_apps }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Get changed files
+        id: changed_files
+        uses: tj-actions/changed-files@v45
+
+      - name: Find app directories
+        id: apps
+        uses: home-assistant/actions/helpers/find-addons@a7c616ce81ccda50150bf1595786c71b1883fabb
+
+      - name: Filter changed apps
+        id: filter
+        env:
+          APPS: ${{ steps.apps.outputs.addons }}
+          CHANGED_FILES: ${{ steps.changed_files.outputs.all_changed_files }}
+        run: |
+          changed_apps=()
+
+          if [[ "${CHANGED_FILES}" =~ \.github/workflows/(builder|build-app)\.ya?ml ]]; then
+            changed_apps=(${APPS})
+          else
+            for app in ${APPS}; do
+              for file in ${MONITORED_FILES}; do
+                if [[ "${CHANGED_FILES}" =~ ${app}/${file} ]]; then
+                  changed_apps+=("${app}")
+                  break
+                fi
+              done
+              # Also rebuild when any tracked source under the app changes
+              if [[ "${CHANGED_FILES}" =~ ${app}/ ]]; then
+                if [[ ! " ${changed_apps[*]} " =~ " ${app} " ]]; then
+                  changed_apps+=("${app}")
+                fi
+              fi
+            done
+          fi
+
+          if [[ ${#changed_apps[@]} -gt 0 ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "changed_apps=$(jq -nc '$ARGS.positional' --args "${changed_apps[@]}")" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-app:
+    name: Build ${{ matrix.app }}
+    needs: init
+    if: needs.init.outputs.changed == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.init.outputs.changed_apps) }}
+    uses: ./.github/workflows/build-app.yaml
+    with:
+      app: ${{ matrix.app }}
+      publish: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    secrets: inherit

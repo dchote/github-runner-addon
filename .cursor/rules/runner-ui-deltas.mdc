@@ -1,0 +1,22 @@
+---
+description: Runner-addon UI exceptions on top of ui-* design rules
+globs: github_runner/frontend/src/**/*.{vue,scss,css,js}
+alwaysApply: true
+---
+
+# Runner addon UI deltas
+
+Canonical UI chrome lives in `.cursor/rules/ui-*.md` and the 8wi design guide. When those conflict with this file, **this file wins**.
+
+## Product exceptions
+
+1. **No navigation drawer / site-nav** — primary (Material Blue) app bar only (title + Docker health chip). Pages use `v-container.page-content` (max-width 1100px for the runners table). API Docs is a small bottom-left footer link.
+2. **Color palette** — Material Design 3 blue from go-mumble-server (`#1976D2` primary; card headers use blue gradient).
+3. **Log viewports** — dark terminal panels for runner container logs.
+4. **VDataTable defaults** — `itemsPerPage: -1`, `hideDefaultFooter: true`.
+5. **Form autocomplete** — `autocomplete="off"` on create-runner fields.
+6. **Action footers** — elevated primary lifecycle (Start or Stop); secondary Restart/Logs tonal; Cancel `color="primary" variant="tonal"`. Detail-pane lifecycle buttons use `size="small"` + nowrap so they stay on one line.
+7. **No alert/confirm** — use `StandardDialog` for destructive delete.
+8. **HA ingress** — resolve API/WS/docs with `resolveURL` / `resolveWSURL` (never hardcode root-absolute paths that ignore `<base href>`).
+9. **Logs** — `RunnerLogsDialog` (not a route); Follow uses WebSocket `/ws` `container_logs`.
+10. **Details edit/delete** — Icon buttons (`mdi-pencil` / `mdi-delete`, `variant="text"`) in the details header, right-aligned — not the action footer.

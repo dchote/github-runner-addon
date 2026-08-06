@@ -1,0 +1,418 @@
+openapi: 3.0.3
+info:
+  title: GitHub Runner Manager API
+  version: 0.2.0
+  description: |
+    Control-plane API for Docker-based GitHub Actions self-hosted runners.
+
+    Runner containers default to the community image myoung34/github-runner
+    (https://github.com/myoung34/docker-github-actions-runner) — this API manages
+    those containers; it does not implement the Actions runner agent.
+
+    Success responses use `{ "result": "ok", "data": … }`.
+    Errors use `{ "result": "error", "error": { "code", "message", "details" } }`.
+
+    Authentication is network-trust (Home Assistant ingress or private bind).
+    Do not expose this API on a public interface.
+
+    Optional `GITHUB_PAT` mints registration tokens and deregisters runners on delete.
+    Live logs are also available over WebSocket at `/ws` (channel `container_logs`).
+
+    WebSocket client messages:
+    `{ "type": "subscribe", "channel": "container_logs", "runner_id": "<id>", "tail": "200" }`
+    `{ "type": "unsubscribe", "channel": "container_logs" }`
+servers:
+  - url: /api/v1
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthEnvelope"
+  /runners:
+    get:
+      summary: List runners
+      operationId: listRunners
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerListEnvelope"
+    post:
+      summary: Create runner
+      operationId: createRunner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunnerRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerEnvelope"
+        "400":
+          description: Validation error
+        "409":
+          description: Duplicate name or container
+        "429":
+          description: Rate limited
+        "502":
+          description: GitHub API error
+        "503":
+          description: Docker unavailable
+  /runners/{id}:
+    get:
+      summary: Get runner
+      operationId: getRunner
+      parameters:
+        - $ref: "#/components/parameters/RunnerId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerEnvelope"
+        "404":
+          description: Not found
+    patch:
+      summary: Update runner config (labels / runtime). Set apply=true to recreate container.
+      operationId: patchRunner
+      parameters:
+        - $ref: "#/components/parameters/RunnerId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchRunnerRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerEnvelope"
+        "400":
+          description: Validation error
+        "404":
+          description: Not found
+    delete:
+      summary: Delete runner (local; GitHub deregister when PAT configured)
+      operationId: deleteRunner
+      parameters:
+        - $ref: "#/components/parameters/RunnerId"
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not found
+        "503":
+          description: Docker unavailable
+  /runners/{id}/start:
+    post:
+      summary: Start runner container
+      operationId: startRunner
+      parameters:
+        - $ref: "#/components/parameters/RunnerId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerEnvelope"
+        "404":
+          description: Not found
+        "503":
+          description: Docker unavailable
+  /runners/{id}/stop:
+    post:
+      summary: Stop runner container
+      operationId: stopRunner
+      parameters:
+        - $ref: "#/components/parameters/RunnerId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerEnvelope"
+        "404":
+          description: Not found
+        "503":
+          description: Docker unavailable
+  /runners/{id}/restart:
+    post:
+      summary: Restart runner container
+      operationId: restartRunner
+      parameters:
+        - $ref: "#/components/parameters/RunnerId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerEnvelope"
+        "404":
+          description: Not found
+        "503":
+          description: Docker unavailable
+  /runners/{id}/recreate:
+    post:
+      summary: Recreate runner container (keeps volume when possible)
+      operationId: recreateRunner
+      parameters:
+        - $ref: "#/components/parameters/RunnerId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecreateRunnerRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerEnvelope"
+        "400":
+          description: Validation error
+        "404":
+          description: Not found
+        "429":
+          description: Rate limited
+        "503":
+          description: Docker unavailable
+  /runners/{id}/logs:
+    get:
+      summary: Runner container logs (plain-text chunked stream)
+      operationId: runnerLogs
+      parameters:
+        - $ref: "#/components/parameters/RunnerId"
+        - name: follow
+          in: query
+          schema:
+            type: boolean
+        - name: tail
+          in: query
+          schema:
+            type: integer
+            default: 200
+      responses:
+        "200":
+          description: Plain text log stream (demultiplexed stdout/stderr)
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          description: Not found
+        "503":
+          description: Docker unavailable
+components:
+  parameters:
+    RunnerId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    CreateRunnerRequest:
+      type: object
+      required: [name, url]
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+          description: Org URL (one path segment) or repo URL (owner/repo)
+        token:
+          type: string
+          description: Short-lived registration token; optional when GITHUB_PAT is configured
+        labels:
+          type: array
+          items:
+            type: string
+        image:
+          type: string
+          description: Per-runner image override (tag or digest)
+        cpu_limit:
+          type: number
+          description: CPU limit in cores (0 = unlimited)
+        memory_limit_mb:
+          type: integer
+          description: Memory limit in MiB (0 = unlimited)
+        extra_env:
+          type: object
+          additionalProperties:
+            type: string
+        network_mode:
+          type: string
+        mount_docker_sock:
+          type: boolean
+          description: Override global MOUNT_DOCKER_SOCK for this runner
+    PatchRunnerRequest:
+      type: object
+      properties:
+        labels:
+          type: array
+          items:
+            type: string
+        image:
+          type: string
+        cpu_limit:
+          type: number
+        memory_limit_mb:
+          type: integer
+        extra_env:
+          type: object
+          additionalProperties:
+            type: string
+        network_mode:
+          type: string
+        mount_docker_sock:
+          type: boolean
+        reset_mount_docker_sock:
+          type: boolean
+          description: Clear per-runner docker-sock override (use global default)
+        apply:
+          type: boolean
+          description: When true, recreate the container to apply runtime changes
+        token:
+          type: string
+          description: Optional registration token when apply=true and volume cannot be reused
+    RecreateRunnerRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Required when the runner data volume is missing and no PAT is configured; otherwise optional for volume reuse
+
+    RunnerStatus:
+      type: string
+      enum: [running, exited, missing, unknown]
+    Runner:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        url:
+          type: string
+        scope:
+          type: string
+          enum: [repo, org]
+        labels:
+          type: array
+          items:
+            type: string
+        container_name:
+          type: string
+        volume_name:
+          type: string
+        image:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        cpu_limit:
+          type: number
+        memory_limit_mb:
+          type: integer
+        extra_env:
+          type: object
+          additionalProperties:
+            type: string
+        network_mode:
+          type: string
+        mount_docker_sock:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/RunnerStatus"
+        running:
+          type: boolean
+    RunnerEnvelope:
+      type: object
+      properties:
+        result:
+          type: string
+          enum: [ok]
+        data:
+          $ref: "#/components/schemas/Runner"
+    RunnerListEnvelope:
+      type: object
+      properties:
+        result:
+          type: string
+          enum: [ok]
+        data:
+          type: object
+          properties:
+            runners:
+              type: array
+              items:
+                $ref: "#/components/schemas/Runner"
+    HealthEnvelope:
+      type: object
+      properties:
+        result:
+          type: string
+          enum: [ok]
+        data:
+          type: object
+          properties:
+            status:
+              type: string
+            version:
+              type: string
+            github_pat_configured:
+              type: boolean
+            runner_image:
+              type: string
+            mount_docker_sock:
+              type: boolean
+            runners:
+              type: object
+              additionalProperties:
+                type: integer
+            orphans:
+              type: array
+              items:
+                type: object
+            docker:
+              type: object
+              properties:
+                available:
+                  type: boolean
+                engine:
+                  type: string
+                error:
+                  type: string
+            store:
+              type: object
+              properties:
+                readable:
+                  type: boolean
+                error:
+                  type: string

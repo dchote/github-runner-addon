@@ -1,0 +1,10 @@
+node_modules
+frontend/node_modules
+frontend/dist
+cmd/github-runner-addon/frontend-dist
+.git
+**/.DS_Store
+*.md
+!DOCS.md
+data
+build

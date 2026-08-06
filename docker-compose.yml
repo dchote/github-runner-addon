@@ -1,0 +1,20 @@
+services:
+  manager:
+    build:
+      context: ./github_runner
+    image: ghcr.io/dchote/github-runner-addon:local
+    ports:
+      # Network-trust auth: bind localhost only; do not expose publicly.
+      - "127.0.0.1:8099:8099"
+    environment:
+      HTTP_PORT: "8099"
+      DATA_DIR: /data
+      MOUNT_DOCKER_SOCK: "true"
+      LOG_LEVEL: info
+      RUNNER_IMAGE: myoung34/github-runner:latest
+    volumes:
+      - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Skip HA s6 /init — run the binary as PID 1 with compose env.
+    entrypoint: ["/usr/bin/github-runner-addon"]
+    restart: unless-stopped

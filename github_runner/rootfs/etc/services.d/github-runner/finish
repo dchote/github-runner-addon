@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Take down the s6 tree when the main service exits (required for init: false).
+# Exit codes 0 and 256 (down) are normal; anything else is a crash.
+if [[ "${1}" -ne 0 ]] && [[ "${1}" -ne 256 ]]; then
+  echo "github-runner service crashed with exit ${1}" >&2
+fi
+exec /run/s6/basedir/bin/halt

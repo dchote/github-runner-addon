@@ -1,0 +1,363 @@
+/**
+ * Operator UI theme — go-mumble-server MD3 blue palette + 8wi page-shell spacing.
+ */
+
+:root {
+  --font-family-base: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-family-heading: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+  /* Material Blue (go-mumble-server) */
+  --brand-primary: #1976D2;
+  --brand-500: #1976D2;
+  --brand-600: #1565C0;
+  --brand-700: #0D47A1;
+  --brand-header-start: #1976D2;
+  --brand-header-mid: #1565C0;
+  --brand-header-end: #2196F3;
+  --brand-border: rgba(25, 118, 210, 0.24);
+  --brand-background: #f5f5f5;
+  --brand-muted: #616161;
+  --card-toolbar-bg: #e3f2fd;
+  --summary-strip-bg: #f5f5f5;
+}
+
+.v-theme--dark {
+  --brand-border: rgba(66, 165, 245, 0.24);
+  --brand-background: #121212;
+  --brand-muted: #bdbdbd;
+  --brand-header-gradient-dark: linear-gradient(135deg, #0D47A1 0%, #1565C0 50%, #1976D2 100%);
+  --card-toolbar-bg: rgba(255, 255, 255, 0.04);
+  --summary-strip-bg: rgba(255, 255, 255, 0.035);
+}
+
+body,
+.v-application {
+  font-family: var(--font-family-base) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--brand-background);
+}
+
+h1, h2, h3, h4, h5, h6,
+.text-headline-large, .text-headline-medium, .text-headline-small,
+.text-title-large, .text-title-medium, .text-title-small,
+.v-card-title,
+.v-toolbar-title,
+.v-app-bar-title {
+  font-family: var(--font-family-heading) !important;
+}
+
+/* Page shell — 8wi: 8/24 → 12/32 at ≥960px */
+.v-container.page-content {
+  padding-top: 8px !important;
+  padding-bottom: 24px !important;
+
+  @media (min-width: 960px) {
+    padding-top: 12px !important;
+    padding-bottom: 32px !important;
+  }
+}
+
+.v-container.page-content.page-content--workspace,
+.v-container.page-content.admin-product-workspace {
+  max-width: 960px !important;
+}
+
+.page-content__intro {
+  margin-bottom: 12px;
+
+  @media (min-width: 960px) {
+    margin-bottom: 16px;
+  }
+}
+
+.v-breadcrumbs.page-content-breadcrumbs {
+  padding: 0 !important;
+  min-height: 0 !important;
+  margin-bottom: 12px !important;
+}
+
+.v-breadcrumbs.page-content-breadcrumbs .v-breadcrumbs-item {
+  padding-block: 0;
+  min-height: 28px;
+}
+
+.v-breadcrumbs.page-content-breadcrumbs .v-breadcrumbs-item:first-child {
+  padding-inline-start: 0 !important;
+}
+
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.page-alert-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.section-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Cards — mumble flat blue chrome + 8wi header/toolbar insets */
+.standard-dialog-card,
+.standard-page-card {
+  border-radius: 0 !important;
+  border: 1px solid var(--brand-border) !important;
+  border-top: 3px solid var(--brand-500) !important;
+  box-shadow: none !important;
+  overflow: visible;
+  position: relative;
+}
+
+.standard-dialog-card .v-card-title {
+  padding: 12px 16px 10px !important;
+  min-height: 52px;
+  color: #fff !important;
+  font-weight: 600;
+  background: linear-gradient(
+    135deg,
+    var(--brand-header-start) 0%,
+    var(--brand-header-mid) 50%,
+    var(--brand-header-end) 100%
+  );
+}
+
+.v-theme--dark .standard-dialog-card .v-card-title {
+  background: var(--brand-header-gradient-dark);
+  color: #fff !important;
+}
+
+.standard-dialog-card .v-card-actions,
+.standard-page-card .standard-card-actions {
+  background: rgba(25, 118, 210, 0.04);
+}
+
+.v-theme--dark .standard-dialog-card .v-card-actions,
+.v-theme--dark .standard-page-card .standard-card-actions {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.v-dialog > .v-overlay__content > .standard-dialog-card.v-card {
+  overflow: visible !important;
+}
+
+.standard-card-header {
+  display: flex !important;
+  align-items: center !important;
+  padding: 12px 16px 10px;
+  gap: 12px;
+  min-height: 52px;
+  color: #fff !important;
+  font-weight: 600;
+  background: linear-gradient(
+    135deg,
+    var(--brand-header-start) 0%,
+    var(--brand-header-mid) 50%,
+    var(--brand-header-end) 100%
+  );
+}
+
+.v-theme--dark .standard-card-header {
+  background: var(--brand-header-gradient-dark);
+  color: #fff !important;
+}
+
+.standard-card-header__primary {
+  min-width: 0;
+}
+
+.standard-card-header__append {
+  gap: 8px;
+}
+
+.standard-card-header__append .v-btn,
+.standard-card-header-action.v-btn {
+  --v-btn-height: 32px;
+  min-height: 32px !important;
+  font-size: 0.8125rem !important;
+  font-weight: 600;
+}
+
+.standard-card-header__append .v-btn:not(.v-btn--icon),
+.standard-card-header-action.v-btn:not(.v-btn--icon) {
+  padding-inline: 12px !important;
+}
+
+.standard-card-header__append .v-btn.v-btn--icon,
+.standard-card-header-action.v-btn.v-btn--icon {
+  width: 32px;
+  padding-inline: 0 !important;
+}
+
+.standard-dialog-card .v-card-title .v-btn {
+  color: #fff !important;
+}
+
+.standard-card-title {
+  font-family: var(--font-family-heading) !important;
+  line-height: 1.25;
+  color: inherit !important;
+}
+
+.standard-card-toolbar {
+  padding: 8px 16px 10px;
+  background: linear-gradient(
+    180deg,
+    rgba(var(--v-theme-on-surface), 0.04) 0%,
+    rgba(var(--v-theme-on-surface), 0.02) 100%
+  );
+  border-radius: 0;
+}
+
+.v-theme--dark .standard-card-toolbar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.02) 100%);
+}
+
+.standard-card-alerts {
+  padding: 12px 16px 0;
+}
+
+.standard-page-card > .v-card-text.standard-card-body,
+.standard-dialog-card > .v-card-text.standard-card-body {
+  padding: 12px 16px 16px !important;
+}
+
+.standard-page-card > .v-card-text.standard-card-body:has(> .v-input:first-child),
+.standard-page-card > .v-card-text.standard-card-body:has(> .v-textarea:first-child),
+.standard-dialog-card > .v-card-text.standard-card-body:has(> .v-input:first-child),
+.standard-dialog-card > .v-card-text.standard-card-body:has(> .v-textarea:first-child) {
+  padding-top: 20px !important;
+}
+
+.standard-page-card > .v-card-text.standard-card-body.standard-card-content-with-toolbar,
+.standard-page-card > .v-card-text.standard-card-body.standard-card-content-with-alerts,
+.standard-dialog-card > .v-card-text.standard-card-body.standard-card-content-with-toolbar,
+.standard-dialog-card > .v-card-text.standard-card-body.standard-card-content-with-alerts {
+  padding-top: 12px !important;
+}
+
+.standard-page-card > .v-card-text.pa-0 {
+  padding: 0 !important;
+}
+
+.standard-page-card .v-card-text,
+.standard-dialog-card .v-card-text {
+  p,
+  h1, h2, h3, h4, h5, h6,
+  ul, ol {
+    margin-block-start: 0;
+  }
+}
+
+.brand-text-muted {
+  color: var(--brand-muted) !important;
+}
+
+.dialog-card-layout {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+}
+
+.dialog-card-layout--fullscreen {
+  max-height: none;
+  height: 100%;
+}
+
+.dialog-card-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.dialog-card-actions {
+  flex-shrink: 0;
+}
+
+a:not(.v-btn) {
+  color: rgb(var(--v-theme-primary)) !important;
+  text-decoration: none;
+}
+
+a.v-btn {
+  text-decoration: none;
+}
+
+.app-header.v-app-bar {
+  background-color: var(--brand-700) !important;
+  color: #ffffff !important;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06) !important;
+
+  .v-btn,
+  .v-btn__overlay,
+  .v-ripple__container {
+    border-radius: 0 !important;
+  }
+
+  .v-btn,
+  .v-app-bar-title,
+  .v-toolbar-title {
+    color: #ffffff !important;
+  }
+}
+
+.v-data-table .v-table__wrapper > table > thead > tr > th,
+.v-table .v-table__wrapper > table > thead > tr > th {
+  white-space: nowrap;
+}
+
+.v-data-table tr.selected-row {
+  background: rgba(25, 118, 210, 0.1) !important;
+}
+
+.v-theme--dark .v-data-table tr.selected-row {
+  background: rgba(66, 165, 245, 0.12) !important;
+}
+
+.v-divider {
+  border-color: rgba(var(--v-theme-on-surface), 0.24) !important;
+  border-width: 1px !important;
+}
+
+.v-theme--dark .v-divider {
+  border-color: rgba(var(--v-theme-on-surface), 0.2) !important;
+}
+
+/* Empty state — centered, large muted icon (8wi recipe) */
+.empty-state {
+  text-align: center;
+  padding: 48px 16px;
+}
+
+.empty-state__icon {
+  font-size: 64px !important;
+  width: 64px;
+  height: 64px;
+  color: var(--brand-muted);
+  margin-bottom: 16px;
+}
+
+.empty-state__title {
+  margin-bottom: 8px;
+}
+
+.empty-state__copy {
+  color: var(--brand-muted);
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+@media (max-width: 599px) {
+  .standard-page-card,
+  .standard-dialog-card {
+    border-radius: 0 !important;
+  }
+}

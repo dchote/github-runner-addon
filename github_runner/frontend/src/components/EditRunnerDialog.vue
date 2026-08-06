@@ -1,0 +1,165 @@
+<template>
+  <StandardDialog
+    :model-value="modelValue"
+    title="Edit runner"
+    :fullscreen="mobile"
+    max-width="560"
+    :persistent="submitting"
+    :close-disabled="submitting"
+    @update:model-value="$emit('update:modelValue', $event)"
+  >
+    <v-alert
+      v-if="error"
+      class="mb-4"
+      type="error"
+      variant="tonal"
+      density="comfortable"
+    >
+      {{ error }}
+    </v-alert>
+    <p class="text-body-medium brand-text-muted mb-4">
+      Name and GitHub URL cannot be changed — create a new runner instead. Apply recreates the
+      container so runtime changes take effect (registration volume is kept when present).
+    </p>
+    <v-form ref="form" @submit.prevent="submit(false)">
+      <p class="text-body-medium mb-4">
+        <strong>{{ runner?.name }}</strong>
+        <span class="brand-text-muted"> — {{ runner?.url }}</span>
+      </p>
+      <RunnerConfigFields
+        v-model:labels="labelChips"
+        v-model:image="image"
+        v-model:cpu-limit="cpuLimit"
+        v-model:memory-limit-mb="memoryLimitMb"
+        v-model:network-mode="networkMode"
+        v-model:extra-env-text="extraEnvText"
+        v-model:mount-docker-sock="mountDockerSock"
+        :disabled="submitting"
+      />
+      <v-switch
+        v-model="apply"
+        class="mb-2"
+        color="primary"
+        density="comfortable"
+        hide-details
+        label="Apply now (recreate container)"
+        :disabled="submitting"
+      />
+      <v-text-field
+        v-if="apply && !patConfigured"
+        v-model="token"
+        class="mb-2"
+        label="Registration token (required if data volume is missing)"
+        type="password"
+        autocomplete="off"
+        :disabled="submitting"
+      />
+    </v-form>
+
+    <template #actions>
+      <v-btn color="primary" variant="tonal" :disabled="submitting" @click="close">
+        Cancel
+      </v-btn>
+      <v-btn color="primary" variant="tonal" :loading="submitting" @click="submit(false)">
+        Save
+      </v-btn>
+      <v-btn color="primary" variant="elevated" :loading="submitting" @click="submit(true)">
+        Save &amp; apply
+      </v-btn>
+    </template>
+  </StandardDialog>
+</template>
+
+<script setup>
+import { computed, ref, watch } from 'vue'
+import { useStore } from 'vuex'
+import StandardDialog from '@/components/common/StandardDialog.vue'
+import RunnerConfigFields from '@/components/RunnerConfigFields.vue'
+import { useMobile } from '@/composables/useMobile'
+import { buildRuntimePayload, formatExtraEnv } from '@/utils/runnerConfig'
+
+const props = defineProps({
+  modelValue: { type: Boolean, default: false },
+  runner: { type: Object, default: null },
+})
+const emit = defineEmits(['update:modelValue'])
+
+const store = useStore()
+const mobile = useMobile()
+const form = ref(null)
+
+const labelChips = ref([])
+const image = ref('')
+const cpuLimit = ref(0)
+const memoryLimitMb = ref(0)
+const networkMode = ref('')
+const extraEnvText = ref('')
+const mountDockerSock = ref(null)
+const apply = ref(false)
+const token = ref('')
+const submitting = ref(false)
+const error = ref('')
+
+const open = computed(() => props.modelValue)
+const patConfigured = computed(() => store.state.githubPatConfigured)
+
+watch(open, (v) => {
+  if (!v || !props.runner) return
+  labelChips.value = [...(props.runner.labels || [])]
+  image.value = props.runner.image || ''
+  cpuLimit.value = props.runner.cpu_limit || 0
+  memoryLimitMb.value = props.runner.memory_limit_mb || 0
+  networkMode.value = props.runner.network_mode || ''
+  extraEnvText.value = formatExtraEnv(props.runner.extra_env)
+  mountDockerSock.value =
+    props.runner.mount_docker_sock === true || props.runner.mount_docker_sock === false
+      ? props.runner.mount_docker_sock
+      : null
+  apply.value = false
+  token.value = ''
+  error.value = ''
+})
+
+function close() {
+  if (!submitting.value) emit('update:modelValue', false)
+}
+
+async function submit(forceApply) {
+  error.value = ''
+  if (!props.runner?.id) return
+  const shouldApply = forceApply || apply.value
+  submitting.value = true
+  try {
+    const runtime = buildRuntimePayload({
+      labels: labelChips.value,
+      image: image.value,
+      cpuLimit: cpuLimit.value,
+      memoryLimitMb: memoryLimitMb.value,
+      networkMode: networkMode.value,
+      extraEnvText: extraEnvText.value,
+      mountDockerSock: mountDockerSock.value,
+    })
+    const payload = {
+      labels: runtime.labels,
+      image: runtime.image,
+      cpu_limit: runtime.cpu_limit,
+      memory_limit_mb: runtime.memory_limit_mb,
+      network_mode: runtime.network_mode,
+      extra_env: runtime.extra_env,
+      apply: shouldApply,
+    }
+    if (runtime.mount_docker_sock === true || runtime.mount_docker_sock === false) {
+      payload.mount_docker_sock = runtime.mount_docker_sock
+    } else {
+      payload.reset_mount_docker_sock = true
+    }
+    if (shouldApply && token.value.trim()) payload.token = token.value.trim()
+    await store.dispatch('patchRunner', { id: props.runner.id, payload })
+    emit('update:modelValue', false)
+  } catch (e) {
+    error.value = e.message || String(e)
+  } finally {
+    submitting.value = false
+  }
+}
+</script>
