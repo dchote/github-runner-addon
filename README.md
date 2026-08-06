@@ -30,17 +30,17 @@ It is intentionally **not** an autoscaling platform. It manages a handful of **p
 
 ## Screenshots
 
-Fleet overview with status chips, runner table, and detail pane:
+Empty state before any runners exist:
 
-![Fleet overview with a running runner and details pane](images/runner_details.png)
+![Empty fleet — no runners yet](images/github_runner_manager.png)
 
 Create a runner (name, project URL, registration token or PAT):
 
 ![Create runner dialog](images/create_runner.png)
 
-Empty state before any runners exist:
+Fleet overview with status chips, runner table, and detail pane:
 
-![Empty fleet — no runners yet](images/github_runner_manager.png)
+![Fleet overview with a running runner and details pane](images/runner_details.png)
 
 Live container logs with Follow over WebSocket:
 
