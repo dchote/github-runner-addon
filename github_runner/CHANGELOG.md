@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- First tagged GitHub release
+- README screenshots reordered to lead with the empty fleet state
+- Version bump across config, OpenAPI, and default `APP_VERSION`
+
 ## 0.2.0
 
 - Optional GitHub PAT (`github_pat` / `GITHUB_PAT`) to mint registration tokens and deregister runners on delete
