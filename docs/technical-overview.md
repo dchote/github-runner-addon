@@ -76,7 +76,7 @@ Default listen: `:8099` (`HTTP_PORT` / `-http-port`). HA ingress uses the same p
 
 Use the standard app data directory `/data` for `runners.json`. It is always available to HA apps, included in backups, and does not need an extra `map:` entry. App options (`log_level`, `mount_docker_sock`, `runner_image`, `github_pat`) are read from `/data/options.json` by the s6 service `rootfs/etc/services.d/github-runner/run` (via `with-contenv`).
 
-Runner **registration** lives in Docker named volumes (`gha-runner-*-data`), not in `/data`. Job workdir is a **host directory** same-path bind (default `/srv/gha-work/<name>`, override `workdir_host_path`) as `RUNNER_WORKDIR`. The agent `workFolder` in `.runner` is set only at configure time — recreate clears `.runner` and reconfigures when it mismatches. Optional **cache** mounts (schema v4) are separate named volumes or host binds — large volumes will not appear in HA addon backups. Prefer named volumes for cache on HAOS. See [0003](features/0003-persistent-runner-cache.md) and [0004](features/0004-sibling-docker-workdir-host-bind.md).
+Runner **registration** lives in Docker named volumes (`gha-runner-*-data`), not in `/data`. Job workdir is a **host directory** same-path bind (default `/srv/gha-work/<name>`, override `workdir_host_path`) as `RUNNER_WORKDIR`. The agent `workFolder` in `.runner` is set only at configure time — recreate clears `.runner` and reconfigures when it mismatches; create/recreate assert the match and return an error on failure. Optional **cache** mounts (schema v4) are separate named volumes or host binds — large volumes will not appear in HA addon backups. Prefer named volumes for cache on HAOS. See [0003](features/0003-persistent-runner-cache.md) and [0004](features/0004-sibling-docker-workdir-host-bind.md).
 
 ## Home Assistant ingress
 
@@ -96,6 +96,8 @@ The SPA injects `<base href>` from `X-Ingress-Path` (and the UI resolves API/WS 
 ## PAT scopes
 
 Classic PAT minimums: `repo` for repository runners; `admin:org` (or org runner admin) for organization runners. Fine-grained PATs need Actions runner administration on the target org/repo. Never commit the PAT; store it in HA options or a private env file.
+
+**Name collision:** container env `RUNNER_TOKEN` (registration, scrubbed after configure) is not the same as a consuming repo’s Actions secret `RUNNER_TOKEN` (PAT used only to list runners for self-hosted-vs-hosted selection). See [DOCS — Consuming repositories](../github_runner/DOCS.md#consuming-repositories-actions-secrets).
 
 ## Credits
 

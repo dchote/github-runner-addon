@@ -2,12 +2,12 @@ package docker
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
@@ -29,7 +29,7 @@ func (c *Client) ReadVolumeFile(ctx context.Context, volumeName, relPath string)
 	}
 	resp, err := c.cli.ContainerCreate(ctx, &container.Config{
 		Image: helperImage,
-		Cmd:   []string{"sleep", "infinity"},
+		Cmd:   []string{"true"},
 	}, &container.HostConfig{
 		Mounts: []mount.Mount{{
 			Type:   mount.TypeVolume,
@@ -45,6 +45,16 @@ func (c *Client) ReadVolumeFile(ctx context.Context, volumeName, relPath string)
 
 	if err := c.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
 		return nil, err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	statusCh, errCh := c.cli.ContainerWait(waitCtx, id, container.WaitConditionNotRunning)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return nil, err
+		}
+	case <-statusCh:
 	}
 
 	reader, _, err := c.cli.CopyFromContainer(ctx, id, "/vol/"+relPath)
@@ -64,14 +74,14 @@ func (c *Client) ReadVolumeFile(ctx context.Context, volumeName, relPath string)
 	if err != nil {
 		return nil, err
 	}
-	if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+	if hdr.Typeflag != tar.TypeReg {
 		return nil, fmt.Errorf("%s in %s is not a regular file", relPath, volumeName)
 	}
 	data, err := io.ReadAll(tr)
 	if err != nil {
 		return nil, err
 	}
-	return stripBOM(data), nil
+	return data, nil
 }
 
 // RemoveVolumeFiles deletes paths inside a named volume (relative to volume root).
@@ -99,9 +109,4 @@ func (c *Client) RemoveVolumeFiles(ctx context.Context, volumeName string, relPa
 		return fmt.Errorf("remove from volume %s: exit %d: %s", volumeName, code, strings.TrimSpace(out))
 	}
 	return nil
-}
-
-// stripBOM removes a UTF-8 BOM so encoding/json can parse runner config files.
-func stripBOM(b []byte) []byte {
-	return bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF})
 }

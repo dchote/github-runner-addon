@@ -28,6 +28,19 @@ func TestIsContextError(t *testing.T) {
 	}
 }
 
+func TestDetachedTimeout(t *testing.T) {
+	ctx, cancel := DetachedTimeout(0)
+	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("expected deadline")
+	}
+	ctx2, cancel2 := DetachedContext()
+	defer cancel2()
+	if _, ok := ctx2.Deadline(); !ok {
+		t.Fatal("DetachedContext deadline")
+	}
+}
+
 func TestIsConflict(t *testing.T) {
 	if !IsConflict(errors.New("Conflict. The container name is already in use")) {
 		t.Fatal("expected conflict")

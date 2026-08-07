@@ -110,23 +110,27 @@ type workdirReconfigurePlan struct {
 	Reason string
 }
 
-func planWorkdirReconfigure(volExists bool, agentWF string, agentErr error, desired string) workdirReconfigurePlan {
+func planWorkdirReconfigure(volExists bool, agentWF string, agentErr error, desired string) (workdirReconfigurePlan, error) {
 	desired = path.Clean(strings.TrimSpace(desired))
 	if !volExists {
-		return workdirReconfigurePlan{Needs: true, Reason: "registration volume missing"}
+		return workdirReconfigurePlan{Needs: true, Reason: "registration volume missing"}, nil
 	}
 	if agentErr != nil {
 		if errors.Is(agentErr, errNoRunnerConfig) {
-			return workdirReconfigurePlan{Needs: true, Reason: "no .runner on volume"}
+			return workdirReconfigurePlan{Needs: true, Reason: "no .runner on volume"}, nil
+		}
+		// Transient cancel/deadline must not clear .runner or force reconfigure.
+		if docker.IsContextError(agentErr) {
+			return workdirReconfigurePlan{}, fmt.Errorf("read .runner: %w", agentErr)
 		}
 		// Unreadable config: force reconfigure so create/apply does not silently keep a bad state.
-		return workdirReconfigurePlan{Needs: true, Reason: "unable to read .runner"}
+		return workdirReconfigurePlan{Needs: true, Reason: "unable to read .runner"}, nil
 	}
 	if strings.TrimSpace(agentWF) == "" {
-		return workdirReconfigurePlan{Needs: true, Reason: "empty workFolder"}
+		return workdirReconfigurePlan{Needs: true, Reason: "empty workFolder"}, nil
 	}
 	if !workdirPathsMatch(agentWF, desired) {
-		return workdirReconfigurePlan{Needs: true, Reason: "workFolder mismatch"}
+		return workdirReconfigurePlan{Needs: true, Reason: "workFolder mismatch"}, nil
 	}
-	return workdirReconfigurePlan{Needs: false}
+	return workdirReconfigurePlan{Needs: false}, nil
 }

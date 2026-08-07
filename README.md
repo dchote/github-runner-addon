@@ -69,6 +69,8 @@ Live container logs with Follow over WebSocket:
 3. Expected config is stored in `/data/runners.json` (tokens are not persisted there).
 4. You monitor Docker status, stream logs, edit runtime settings, and recreate if a container goes missing.
 
+**Consuming repos:** the short-lived container env `RUNNER_TOKEN` (registration) is not an Actions secret. Workflows that list runners and fall open to GitHub-hosted should use a separate Actions secret **`RUNNER_TOKEN`** (Administration: Read) — see [HA app DOCS — Consuming repositories](github_runner/DOCS.md#consuming-repositories-actions-secrets).
+
 ## Credits and attribution
 
 ### Runner containers: `myoung34/github-runner`
@@ -103,7 +105,7 @@ If you use this addon, please also consider starring and supporting [myoung34/do
 | [API design](docs/patterns/api-design.md) | REST envelope, endpoints, WebSocket |
 | [0001 Fleet manager](docs/features/0001-runner-fleet-manager.md) | Create / lifecycle / logs contract |
 | [0002 Hardened fleet](docs/features/0002-hardened-persistent-fleet.md) | PAT, recreate, edit, security close-out |
-| [HA app DOCS](github_runner/DOCS.md) | In-Supervisor options and usage |
+| [HA app DOCS](github_runner/DOCS.md) | In-Supervisor options, usage, and consuming-repo Actions secrets (`RUNNER_TOKEN`) |
 
 ## Layout
 

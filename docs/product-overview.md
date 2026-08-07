@@ -27,11 +27,12 @@ It is aimed at home-lab and small-team operators who want persistent self-hosted
 - **Expected config**: records in `/data/runners.json` (name, URL, labels, container/volume names, runtime limits, optional cache, optional workdir host path). Registration tokens and PATs are not stored in JSON; registration tokens are passed to the container env only until registration succeeds.
 - **Persistent cache**: optional named volume or host bind (default `/cache`) for incremental CI; share across runners by reusing the same volume name or host path.
 - **Sibling-Docker workdir**: host directory same-path bind (default `/srv/gha-work/<normalized-name>`) so jobs can `docker run -v $GITHUB_WORKSPACE`; agent `workFolder` must match (reconfigure when it drifts).
+- **Consuming Actions secrets**: repos that select this runner when online should use Actions secret **`RUNNER_TOKEN`** (Administration: Read) for the runners API — separate from this manager’s short-lived registration env and from private-module PATs. See [DOCS](../github_runner/DOCS.md#consuming-repositories-actions-secrets).
 
 ## Core User Flows
 
 1. **Create runner** — enter name, GitHub project URL, and either a registration token or rely on a configured PAT; optional labels, runtime limits, cache, and workdir host path (default `/srv/gha-work/<name>`).
-2. **Monitor** — table of local runners with Docker status; start / stop / restart / recreate / delete; orphan-container warnings when present; workdir mismatch when agent `workFolder` ≠ host bind.
+2. **Monitor** — table of local runners with Docker status; start / stop / restart / recreate / delete; orphan-container warnings when present; workdir mismatch when agent `workFolder` ≠ host bind (details pane loads live agent diagnostics; list uses cache).
 3. **Edit** — update labels, image, resources, env, docker-sock override, cache, workdir; apply recreates and reconfigures when workdir must move.
 4. **Logs** — view and follow the runner container’s stdout/stderr.
 5. **Delete** — remove local container and registration volume; host workdir trees are left on disk; shared cache volumes only when unreferenced. With PAT, also deregister from GitHub when possible.

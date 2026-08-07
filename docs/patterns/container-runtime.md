@@ -36,9 +36,11 @@ Prefer **named volumes** for cache on Home Assistant OS. Workdir and cache host 
 
 Before bind-mount, the manager `mkdir -p`s missing host dirs via a one-shot helper that bind-mounts the narrowest known root (`/srv`, `/mnt`, …) containing the path (not `/` unless necessary).
 
-`myoung34/github-runner` sets `--work` only at **configure** time. Recreate stops the container first, then clears `.runner` when `workFolder` differs, then starts with a token/PAT. After start, the manager asserts agent `workFolder` matches the host bind (fail closed). Env alone never moves the agent workdir.
+`myoung34/github-runner` sets `--work` only at **configure** time. Recreate stops the container first, then clears `.runner` when `workFolder` differs, then starts with a token/PAT. After start, the manager asserts agent `workFolder` matches the host bind and returns an error if it does not (fail closed). Env alone never moves the agent workdir.
 
-Container `StopTimeout` is **120s** for managed runners. Stop/restart use the container’s configured timeout, or **30s** if unset (e.g. older containers).
+Create/recreate/save-apply Docker work runs on a detached lifecycle deadline so client disconnect cannot cancel mid-pipeline (especially after clearing `.runner`). Transient Docker cancel while reading `.runner` does not force a reconfigure wipe.
+
+Container `StopTimeout` is **120s** for managed runners. API stop/restart/delete timeouts are sized above that grace. Stop/restart use the container’s configured timeout, or **30s** if unset (e.g. older containers).
 
 **Permissions:** the default image runs as root. For non-root images/users, `chown` work and cache host paths to that uid (often `1000`), or mount cache read-only. Rejected paths include `/`, `/etc`, `/proc`, `/sys`, docker.sock, and workdir under `/var/lib/docker`.
 

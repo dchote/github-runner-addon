@@ -35,11 +35,13 @@ func NewRouter(mgr *runner.Manager, dockerClient *docker.Client, feFS fs.FS) htt
 		api.With(middleware.Timeout(60*time.Second)).Get("/runners", h.ListRunners)
 		api.With(middleware.Timeout(10*time.Minute)).Post("/runners", h.CreateRunner)
 		api.With(middleware.Timeout(60*time.Second)).Get("/runners/{id}", h.GetRunner)
-		api.With(middleware.Timeout(2*time.Minute)).Patch("/runners/{id}", h.PatchRunner)
-		api.With(middleware.Timeout(2*time.Minute)).Delete("/runners/{id}", h.DeleteRunner)
+		// Patch may run full Recreate when apply=true — same budget as recreate.
+		api.With(middleware.Timeout(10*time.Minute)).Patch("/runners/{id}", h.PatchRunner)
+		// Delete/stop/restart must cover Config.StopTimeout (120s) plus Docker round-trips.
+		api.With(middleware.Timeout(3*time.Minute)).Delete("/runners/{id}", h.DeleteRunner)
 		api.With(middleware.Timeout(60*time.Second)).Post("/runners/{id}/start", h.StartRunner)
-		api.With(middleware.Timeout(60*time.Second)).Post("/runners/{id}/stop", h.StopRunner)
-		api.With(middleware.Timeout(60*time.Second)).Post("/runners/{id}/restart", h.RestartRunner)
+		api.With(middleware.Timeout(3*time.Minute)).Post("/runners/{id}/stop", h.StopRunner)
+		api.With(middleware.Timeout(3*time.Minute)).Post("/runners/{id}/restart", h.RestartRunner)
 		api.With(middleware.Timeout(10*time.Minute)).Post("/runners/{id}/recreate", h.RecreateRunner)
 		// No timeout: follow streams may run indefinitely.
 		api.Get("/runners/{id}/logs", h.RunnerLogs)

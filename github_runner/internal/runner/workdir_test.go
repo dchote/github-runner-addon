@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -76,18 +77,30 @@ func TestPlanWorkdirReconfigure(t *testing.T) {
 		agentWF   string
 		agentErr  error
 		wantNeeds bool
+		wantErr   bool
 	}{
-		{"missing volume", false, "", nil, true},
-		{"no runner file", true, "", errNoRunnerConfig, true},
-		{"read error", true, "", errors.New("boom"), true},
-		{"empty folder", true, "", nil, true},
-		{"mismatch", true, "/tmp/runner/work", nil, true},
-		{"match", true, "/srv/gha-work/lab", nil, false},
-		{"match cleaned", true, "/srv/gha-work/lab/", nil, false},
+		{"missing volume", false, "", nil, true, false},
+		{"no runner file", true, "", errNoRunnerConfig, true, false},
+		{"read error", true, "", errors.New("boom"), true, false},
+		{"context canceled", true, "", context.Canceled, false, true},
+		{"deadline exceeded", true, "", context.DeadlineExceeded, false, true},
+		{"empty folder", true, "", nil, true, false},
+		{"mismatch", true, "/tmp/runner/work", nil, true, false},
+		{"match", true, "/srv/gha-work/lab", nil, false, false},
+		{"match cleaned", true, "/srv/gha-work/lab/", nil, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := planWorkdirReconfigure(tc.volExists, tc.agentWF, tc.agentErr, desired)
+			plan, err := planWorkdirReconfigure(tc.volExists, tc.agentWF, tc.agentErr, desired)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
 			if plan.Needs != tc.wantNeeds {
 				t.Fatalf("Needs=%v want %v reason=%s", plan.Needs, tc.wantNeeds, plan.Reason)
 			}

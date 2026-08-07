@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dchote/github-runner-addon/internal/container/docker"
 	"github.com/dchote/github-runner-addon/internal/store"
@@ -18,6 +19,7 @@ type fakeWorkdirHost struct {
 	removed    []string
 	ensureErr  error
 	readErr    error
+	reads      int
 }
 
 func newFakeWorkdirHost() *fakeWorkdirHost {
@@ -39,6 +41,7 @@ func (f *fakeWorkdirHost) EnsureHostDir(_ context.Context, hostPath string) erro
 func (f *fakeWorkdirHost) ReadVolumeFile(_ context.Context, volumeName, relPath string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.reads++
 	if f.readErr != nil {
 		return nil, f.readErr
 	}
@@ -63,20 +66,39 @@ func (f *fakeWorkdirHost) RemoveVolumeFiles(_ context.Context, volumeName string
 func TestReadAgentWorkFolderMissingAndCache(t *testing.T) {
 	fh := newFakeWorkdirHost()
 	m := &Manager{workdirHost: fh, agentWF: map[string]agentWorkFolderCache{}}
-	_, err := m.readAgentWorkFolder(context.Background(), "vol")
+	_, err := m.readAgentWorkFolder(context.Background(), "vol", false)
 	if !errors.Is(err, errNoRunnerConfig) {
 		t.Fatalf("err=%v", err)
 	}
 	// Second call hits cache (no second map miss needing files).
 	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"/srv/x"}`)
-	_, err = m.readAgentWorkFolder(context.Background(), "vol")
+	_, err = m.readAgentWorkFolder(context.Background(), "vol", false)
 	if !errors.Is(err, errNoRunnerConfig) {
 		t.Fatalf("cached missing should stick until invalidate: %v", err)
 	}
 	m.invalidateAgentWorkFolder("vol")
-	wf, err := m.readAgentWorkFolder(context.Background(), "vol")
+	wf, err := m.readAgentWorkFolder(context.Background(), "vol", false)
 	if err != nil || wf != "/srv/x" {
 		t.Fatalf("wf=%q err=%v", wf, err)
+	}
+}
+
+func TestReadAgentWorkFolderBypassCache(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"/srv/old"}`)
+	m := &Manager{workdirHost: fh, agentWF: map[string]agentWorkFolderCache{"vol": {folder: "/srv/old"}}}
+	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"/srv/new"}`)
+	wf, err := m.readAgentWorkFolder(context.Background(), "vol", true)
+	if err != nil || wf != "/srv/new" {
+		t.Fatalf("bypass: wf=%q err=%v", wf, err)
+	}
+	if fh.reads != 1 {
+		t.Fatalf("reads=%d want 1", fh.reads)
+	}
+	// Cache-only still returns stale until bypass/invalidate.
+	wf, err = m.readAgentWorkFolder(context.Background(), "vol", false)
+	if err != nil || wf != "/srv/new" {
+		t.Fatalf("after bypass cache updated: wf=%q err=%v", wf, err)
 	}
 }
 
@@ -84,12 +106,12 @@ func TestReadAgentWorkFolderDoesNotCacheHardErrors(t *testing.T) {
 	fh := newFakeWorkdirHost()
 	fh.readErr = errors.New("pull failed")
 	m := &Manager{workdirHost: fh}
-	if _, err := m.readAgentWorkFolder(context.Background(), "vol"); err == nil {
+	if _, err := m.readAgentWorkFolder(context.Background(), "vol", false); err == nil {
 		t.Fatal("expected error")
 	}
 	fh.readErr = nil
 	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"/srv/ok"}`)
-	wf, err := m.readAgentWorkFolder(context.Background(), "vol")
+	wf, err := m.readAgentWorkFolder(context.Background(), "vol", false)
 	if err != nil || wf != "/srv/ok" {
 		t.Fatalf("retry after hard error: wf=%q err=%v", wf, err)
 	}
@@ -125,12 +147,75 @@ func TestVerifyAgentWorkdirFailsMismatch(t *testing.T) {
 	fh := newFakeWorkdirHost()
 	rec := store.Runner{ContainerName: "gha-runner-lab", VolumeName: "vol"}
 	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"/tmp/runner/work"}`)
-	m := &Manager{workdirHost: fh}
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
-	defer cancel()
-	// Zero timeout: one attempt then ctx done or immediate deadline.
-	err := m.verifyAgentWorkdir(ctx, rec)
+	m := &Manager{workdirHost: fh, verifyTimeout: 50 * time.Millisecond}
+	err := m.verifyAgentWorkdir(context.Background(), rec)
 	if err == nil {
 		t.Fatal("expected failure")
+	}
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("want ErrValidation, got %v", err)
+	}
+}
+
+func TestVerifyAgentWorkdirIgnoresCanceledParent(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	rec := store.Runner{ContainerName: "gha-runner-lab", VolumeName: "vol"}
+	desired := resolveWorkdirHostPath(rec)
+	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"` + desired + `"}`)
+	m := &Manager{workdirHost: fh}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.verifyAgentWorkdir(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnrichListUsesCacheOnly(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"/srv/gha-work/lab"}`)
+	rec := store.Runner{ContainerName: "gha-runner-lab", VolumeName: "vol", Name: "lab"}
+	m := &Manager{
+		workdirHost: fh,
+		agentWF:     map[string]agentWorkFolderCache{"vol": {folder: "/srv/gha-work/lab"}},
+	}
+	v := m.enrich(context.Background(), rec, enrichOpts{workdirDiag: false})
+	if v.WorkdirAgent != "/srv/gha-work/lab" || v.WorkdirMismatch {
+		t.Fatalf("list enrich: %+v", v)
+	}
+	if fh.reads != 0 {
+		t.Fatalf("list must not read volume files, reads=%d", fh.reads)
+	}
+}
+
+func TestEnrichGetBypassesCache(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"/srv/gha-work/lab"}`)
+	rec := store.Runner{ContainerName: "gha-runner-lab", VolumeName: "vol", Name: "lab"}
+	m := &Manager{
+		workdirHost: fh,
+		agentWF:     map[string]agentWorkFolderCache{"vol": {folder: "/tmp/runner/work"}},
+	}
+	v := m.enrich(context.Background(), rec, enrichOpts{workdirDiag: true})
+	if fh.reads != 1 {
+		t.Fatalf("get must live-read, reads=%d", fh.reads)
+	}
+	if v.WorkdirAgent != "/srv/gha-work/lab" || v.WorkdirMismatch {
+		t.Fatalf("get enrich: agent=%q mismatch=%v", v.WorkdirAgent, v.WorkdirMismatch)
+	}
+}
+
+func TestEnsurePersistenceHostDirs(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	m := &Manager{workdirHost: fh}
+	rec := store.Runner{
+		ContainerName: "gha-runner-lab",
+		Cache:         &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/mnt/cache/lab"},
+	}
+	workdir := resolveWorkdirHostPath(rec)
+	if err := m.ensurePersistenceHostDirs(context.Background(), rec, workdir); err != nil {
+		t.Fatal(err)
+	}
+	if len(fh.ensureDirs) != 2 {
+		t.Fatalf("ensureDirs=%v", fh.ensureDirs)
 	}
 }

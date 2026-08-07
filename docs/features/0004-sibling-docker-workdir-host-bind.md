@@ -41,6 +41,9 @@ API/UI expose:
 - `workdir_effective` — resolved host bind / `RUNNER_WORKDIR`
 - `workdir_agent` — `workFolder` from `/runner/data/.runner`
 - `workdir_mismatch` — true when they differ (apply/reconfigure needed)
+- `workdir_error` — optional diagnostics error when `.runner` cannot be read
+
+**List vs Get:** `GET /runners` uses cached agent workdir (no helper containers per poll). `GET /runners/{id}` (and the UI details pane) performs a live `.runner` read. After create/recreate the manager asserts `workFolder` matches and returns an error if it does not (fail closed); a managed container may still remain for operator recovery.
 
 ## Operator checklist
 
@@ -51,6 +54,10 @@ sudo chown -R 1000:1000 /srv/gha-work/my-runner
 ```
 
 After upgrade from Mountpoint workdirs: **Recreate** (or Save & apply) each runner with PAT/token so `workFolder` moves onto the host bind. Confirm a job’s “Working directory” is under `/srv/gha-work/…` and `ls` on the host shows the checkout during the job.
+
+## Consuming workflows
+
+Jobs that select this runner when online (API list → fail open to `ubuntu-latest`) should use an Actions secret named **`RUNNER_TOKEN`** with **Administration: Read** on the target repo — **not** the short-lived registration `RUNNER_TOKEN` env this manager injects into containers, and not the same PAT used only for private Go modules. Details: [DOCS — Consuming repositories](../../github_runner/DOCS.md#consuming-repositories-actions-secrets).
 
 ## Related
 

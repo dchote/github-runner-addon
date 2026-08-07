@@ -331,10 +331,20 @@ function openRecreate() {
   recreateOpen.value = true
 }
 
+async function refreshSelected() {
+  if (!selectedId.value) return
+  try {
+    await store.dispatch('fetchRunner', selectedId.value)
+  } catch {
+    /* list poll stays authoritative; detail diagnostics are best-effort */
+  }
+}
+
 async function refresh() {
   try {
     await store.dispatch('fetchRunners')
     await store.dispatch('fetchHealth')
+    await refreshSelected()
   } catch {
     /* error surfaced via store */
   }
@@ -345,6 +355,7 @@ async function runAction(action) {
   actionLoading.value = true
   try {
     await store.dispatch(action, selected.value.id)
+    await refreshSelected()
   } catch {
     /* error surfaced via store */
   } finally {
@@ -361,6 +372,7 @@ async function confirmRecreate() {
       token: recreateToken.value.trim() || undefined,
     })
     recreateOpen.value = false
+    await refreshSelected()
   } catch {
     /* error surfaced via store */
   } finally {
@@ -388,6 +400,7 @@ watch(selectedId, (id) => {
   if (id) q.id = id
   else delete q.id
   router.replace({ query: q }).catch(() => {})
+  if (id) refreshSelected()
 })
 
 onMounted(async () => {
@@ -399,9 +412,14 @@ onMounted(async () => {
   if (fromQuery && runners.value.some((r) => r.id === fromQuery)) {
     select(fromQuery)
   }
-  pollTimer = setInterval(() => {
-    store.dispatch('fetchRunners').catch(() => {})
-    store.dispatch('fetchHealth').catch(() => {})
+  pollTimer = setInterval(async () => {
+    try {
+      await store.dispatch('fetchRunners')
+      await store.dispatch('fetchHealth')
+      await refreshSelected()
+    } catch {
+      /* error surfaced via store */
+    }
   }, 10000)
 })
 

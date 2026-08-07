@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.4
+
+- Harden Docker lifecycle against client/ingress cancel: detached create/recreate/scrub contexts; fail closed on workdir verify (return error, keep runner for recovery); do not clear `.runner` on transient read cancel
+- List skips live `.runner` reads (cache-only); Get/details fetch live diagnostics; short-lived volume helper; longer PATCH/stop/delete API timeouts
+- Docs: workdir diagnostics List vs Get; consuming-repo Actions `RUNNER_TOKEN` note
+
 ## 0.4.3
 
 - Fix `.runner` workFolder reads: use `CopyFromContainer` instead of `cat` via container logs (avoids multiplex/BOM corruption that blocked create verify and hung the UI), and strip UTF-8 BOM before JSON parse

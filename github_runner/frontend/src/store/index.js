@@ -33,6 +33,12 @@ export default createStore({
     setRunners(state, runners) {
       state.runners = runners || []
     },
+    upsertRunner(state, runner) {
+      if (!runner?.id) return
+      const i = state.runners.findIndex((r) => r.id === runner.id)
+      if (i >= 0) state.runners.splice(i, 1, { ...state.runners[i], ...runner })
+      else state.runners.push(runner)
+    },
     setHealth(state, health) {
       state.dockerAvailable = health?.docker?.available ?? null
       state.dockerEngine = health?.docker?.engine || 'Docker'
@@ -75,6 +81,12 @@ export default createStore({
         commit('setInitialLoading', false)
         commit('setLoading', false)
       }
+    },
+    async fetchRunner({ commit }, id) {
+      if (!id) return null
+      const runner = await api.get(`/api/v1/runners/${id}`)
+      commit('upsertRunner', runner)
+      return runner
     },
     createRunner(ctx, payload) {
       return mutateRunner(ctx, () => api.post('/api/v1/runners', payload), { refreshHealth: true })

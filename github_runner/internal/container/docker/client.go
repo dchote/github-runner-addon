@@ -219,7 +219,7 @@ func (c *Client) adoptExisting(opts CreateOpts, createErr error) (string, error)
 	if !IsConflict(createErr) && !IsContextError(createErr) {
 		return "", createErr
 	}
-	dctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	dctx, cancel := DetachedContext()
 	defer cancel()
 
 	info, err := c.InspectByName(dctx, opts.Name)
@@ -260,13 +260,13 @@ func (c *Client) startByID(ctx context.Context, id string) error {
 }
 
 func (c *Client) startByIDDetached(id string) error {
-	dctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	dctx, cancel := DetachedContext()
 	defer cancel()
 	return c.cli.ContainerStart(dctx, id, container.StartOptions{})
 }
 
 func (c *Client) removeByIDDetached(id string) error {
-	dctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	dctx, cancel := DetachedContext()
 	defer cancel()
 	return c.cli.ContainerRemove(dctx, id, container.RemoveOptions{Force: true})
 }
@@ -440,10 +440,19 @@ func IsContextError(err error) bool {
 		strings.Contains(msg, "context deadline exceeded")
 }
 
-// DetachedContext returns a background context with opTimeout for cleanup when
-// the caller's context may already be canceled.
+// DetachedTimeout returns a background context with the given timeout for Docker
+// work that must outlive a canceled client/ingress request.
+func DetachedTimeout(d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		d = opTimeout
+	}
+	return context.WithTimeout(context.Background(), d)
+}
+
+// DetachedContext returns a background context with opTimeout for short cleanup
+// when the caller's context may already be canceled.
 func DetachedContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), opTimeout)
+	return DetachedTimeout(opTimeout)
 }
 
 // Logs returns a demultiplexed stdout+stderr stream (no Docker mux headers).
