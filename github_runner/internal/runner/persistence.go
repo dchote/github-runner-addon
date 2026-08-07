@@ -67,14 +67,6 @@ func resolveCacheVolumeName(rec store.Runner) string {
 	return rec.ContainerName + "-cache"
 }
 
-// resolveWorkVolumeName returns the auto-managed per-runner work volume name.
-func resolveWorkVolumeName(rec store.Runner) string {
-	if rec.ContainerName == "" {
-		return ""
-	}
-	return rec.ContainerName + "-work"
-}
-
 // cacheVolumeOwned reports whether a failed-create rollback may remove the cache volume
 // (auto-named volumes only; never shared/custom names or binds).
 func cacheVolumeOwned(rec store.Runner) bool {
@@ -121,7 +113,7 @@ func validateCache(c *store.CacheConfig) error {
 		return fmt.Errorf("%w: cache.target must not be %s", ErrValidation, configFilesDir)
 	}
 	if typ == "bind" {
-		if err := validateBindHostPath(c.HostPath); err != nil {
+		if err := validateHostBindPath(c.HostPath, "cache.host_path"); err != nil {
 			return err
 		}
 	} else {
@@ -152,22 +144,7 @@ func validateMountPath(p, label string) error {
 	return nil
 }
 
-func validateBindHostPath(hostPath string) error {
-	hostPath = strings.TrimSpace(hostPath)
-	if hostPath == "" {
-		return fmt.Errorf("%w: cache.host_path is required when cache.type is bind", ErrValidation)
-	}
-	if err := validateMountPath(hostPath, "cache.host_path"); err != nil {
-		return err
-	}
-	if strings.Contains(hostPath, "\x00") {
-		return fmt.Errorf("%w: invalid cache.host_path", ErrValidation)
-	}
-	return nil
-}
-
-// buildExtraMounts builds cache mounts plus the job workdir same-path bind at workdirBind
-// (the Docker volume Mountpoint).
+// buildExtraMounts builds cache mounts plus the job workdir same-path host bind.
 func buildExtraMounts(rec store.Runner, workdirBind string) []mount.Mount {
 	var mounts []mount.Mount
 	if rec.Cache != nil && rec.Cache.Enabled {

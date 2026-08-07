@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -52,15 +51,6 @@ func TestValidateCacheRegistrationCollision(t *testing.T) {
 	}
 }
 
-func TestResolveWorkVolumeName(t *testing.T) {
-	if got := resolveWorkVolumeName(store.Runner{ContainerName: "gha-runner-lab"}); got != "gha-runner-lab-work" {
-		t.Fatalf("%s", got)
-	}
-	if got := resolveWorkVolumeName(store.Runner{}); got != "" {
-		t.Fatalf("empty container: %s", got)
-	}
-}
-
 func TestBuildExtraMounts(t *testing.T) {
 	rec := store.Runner{
 		ContainerName: "gha-runner-lab",
@@ -71,22 +61,16 @@ func TestBuildExtraMounts(t *testing.T) {
 			ReadOnly: true,
 		},
 	}
-	mp := "/var/lib/docker/volumes/gha-runner-lab-work/_data"
-	mounts := buildExtraMounts(rec, mp)
+	hp := "/srv/gha-work/lab"
+	mounts := buildExtraMounts(rec, hp)
 	if len(mounts) != 2 {
 		t.Fatalf("len=%d", len(mounts))
 	}
 	if mounts[0].Type != mount.TypeVolume || mounts[0].Target != "/cache" || !mounts[0].ReadOnly {
 		t.Fatalf("cache: %+v", mounts[0])
 	}
-	if mounts[1].Type != mount.TypeBind || mounts[1].Source != mp || mounts[1].Target != mp {
+	if mounts[1].Type != mount.TypeBind || mounts[1].Source != hp || mounts[1].Target != hp {
 		t.Fatalf("workdir: %+v", mounts[1])
-	}
-}
-
-func TestStopTimeoutSecs(t *testing.T) {
-	if StopTimeoutSecs != 120 {
-		t.Fatalf("StopTimeoutSecs=%d", StopTimeoutSecs)
 	}
 }
 
@@ -96,28 +80,18 @@ func TestBuildExtraMountsEmptyWorkdir(t *testing.T) {
 	if len(mounts) != 0 {
 		t.Fatalf("expected no mounts without workdir bind, got %+v", mounts)
 	}
-	mounts = buildExtraMounts(rec, "  ")
-	if len(mounts) != 0 {
-		t.Fatalf("whitespace workdir should be ignored, got %+v", mounts)
-	}
 }
 
-func TestCachedWorkdirMountpoint(t *testing.T) {
-	m := &Manager{workdirMP: map[string]string{"vol-a": "/mnt/a"}}
-	mp, err := m.cachedWorkdirMountpoint(context.Background(), "vol-a")
-	if err != nil || mp != "/mnt/a" {
-		t.Fatalf("cache hit: mp=%q err=%v", mp, err)
-	}
-	m.invalidateWorkdirMountpoint("vol-a")
-	if _, ok := m.workdirMP["vol-a"]; ok {
-		t.Fatal("expected cache invalidate")
+func TestStopTimeoutSecs(t *testing.T) {
+	if StopTimeoutSecs != 120 {
+		t.Fatalf("StopTimeoutSecs=%d", StopTimeoutSecs)
 	}
 }
 
 func TestBuildEnvWorkdir(t *testing.T) {
 	m := &Manager{}
-	env := m.buildEnv(store.Runner{Name: "n", Scope: "repo", URL: "https://github.com/a/b", Labels: []string{"self-hosted"}}, "", "", "/mnt/vol/_data")
-	if !strings.Contains(strings.Join(env, "\n"), "RUNNER_WORKDIR=/mnt/vol/_data") {
+	env := m.buildEnv(store.Runner{Name: "n", Scope: "repo", URL: "https://github.com/a/b", Labels: []string{"self-hosted"}}, "", "", "/srv/gha-work/n")
+	if !strings.Contains(strings.Join(env, "\n"), "RUNNER_WORKDIR=/srv/gha-work/n") {
 		t.Fatal(env)
 	}
 }
@@ -129,5 +103,11 @@ func TestCacheVolumeRefs(t *testing.T) {
 	}
 	if n := cacheVolumeRefs(runners, "shared"); n != 2 {
 		t.Fatalf("shared refs=%d", n)
+	}
+}
+
+func TestLegacyWorkVolumeName(t *testing.T) {
+	if got := legacyWorkVolumeName(store.Runner{ContainerName: "gha-runner-lab"}); got != "gha-runner-lab-work" {
+		t.Fatalf("%s", got)
 	}
 }

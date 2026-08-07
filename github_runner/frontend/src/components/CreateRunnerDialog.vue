@@ -88,6 +88,8 @@
               v-model:cache-host-path="cacheHostPath"
               v-model:cache-target="cacheTarget"
               v-model:cache-read-only="cacheReadOnly"
+              v-model:workdir-host-path="workdirHostPath"
+              :runner-name="name"
               :disabled="submitting"
             />
           </v-expansion-panel-text>
@@ -139,6 +141,7 @@ const cacheVolumeName = ref('')
 const cacheHostPath = ref('')
 const cacheTarget = ref('/cache')
 const cacheReadOnly = ref(false)
+const workdirHostPath = ref('')
 const advancedOpen = ref([])
 const submitting = ref(false)
 const error = ref('')
@@ -165,6 +168,7 @@ watch(open, (v) => {
     cacheHostPath.value = ''
     cacheTarget.value = '/cache'
     cacheReadOnly.value = false
+    workdirHostPath.value = ''
     advancedOpen.value = []
     error.value = ''
   }
@@ -199,6 +203,7 @@ async function submit() {
       cacheHostPath: cacheHostPath.value,
       cacheTarget: cacheTarget.value,
       cacheReadOnly: cacheReadOnly.value,
+      workdirHostPath: workdirHostPath.value,
     })
     const payload = {
       name: name.value.trim(),
@@ -216,6 +221,7 @@ async function submit() {
       payload.mount_docker_sock = runtime.mount_docker_sock
     }
     payload.cache = runtime.cache
+    if (runtime.workdir_host_path) payload.workdir_host_path = runtime.workdir_host_path
     await store.dispatch('createRunner', payload)
     emit('update:modelValue', false)
   } catch (e) {

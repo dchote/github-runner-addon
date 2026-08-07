@@ -33,6 +33,21 @@ describe('runnerConfig', () => {
     expect(p.mount_docker_sock).toBe(true)
     expect(p.extra_env).toEqual({ A: 'b' })
     expect(p.cache).toEqual({ enabled: false })
+    expect(p.workdir_host_path).toBe('')
+  })
+
+  it('includes workdir host path', () => {
+    const p = buildRuntimePayload({
+      labels: [],
+      image: '',
+      cpuLimit: 0,
+      memoryLimitMb: 0,
+      networkMode: '',
+      extraEnvText: '',
+      mountDockerSock: null,
+      workdirHostPath: '/srv/gha-work/lab',
+    })
+    expect(p.workdir_host_path).toBe('/srv/gha-work/lab')
   })
 
   it('builds cache volume payload', () => {

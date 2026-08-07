@@ -118,7 +118,6 @@ func (c *Client) VolumeExists(ctx context.Context, name string) (bool, error) {
 }
 
 // VolumeMountpoint returns the host path where Docker stores a named volume's data.
-// Used to same-path bind the workdir so sibling containers can mount $GITHUB_WORKSPACE.
 func (c *Client) VolumeMountpoint(ctx context.Context, name string) (string, error) {
 	if err := validateVolumeName(name); err != nil {
 		return "", err

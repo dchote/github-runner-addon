@@ -10,6 +10,9 @@
     <p class="text-body-medium mb-1">
       <strong>Workdir:</strong> {{ workdirLabel }}
     </p>
+    <p v-if="runner.workdir_mismatch" class="text-body-small text-error mb-1">
+      Agent workFolder does not match the host bind — Save &amp; apply (reconfigure) required.
+    </p>
     <p class="text-body-medium mb-1"><strong>Image:</strong> {{ runner.image }}</p>
     <p class="text-body-medium mb-1"><strong>Status:</strong> {{ runner.status }}</p>
     <p class="text-body-medium mb-1">
@@ -70,16 +73,19 @@ const cacheLabel = computed(() => {
 })
 
 const workdirLabel = computed(() => {
-  const resolved = props.runner?.workdir_resolved
+  const effective = props.runner?.workdir_effective || props.runner?.workdir_host_path
+  const agent = props.runner?.workdir_agent
   const err = props.runner?.workdir_error
-  const vol = props.runner?.work_volume_name || `${props.runner?.container_name || ''}-work`
-  if (resolved) {
-    return `${vol} → ${resolved}`
+  if (err && !agent) {
+    return `${effective || '—'} (agent: ${err})`
   }
-  if (err) {
-    return `volume ${vol} (unresolved: ${err})`
+  if (agent && effective) {
+    return `${effective} (agent workFolder: ${agent})`
   }
-  return `volume ${vol}`
+  if (effective) {
+    return `${effective} (agent workFolder: unknown)`
+  }
+  return '—'
 })
 
 function formatTime(v) {

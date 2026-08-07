@@ -24,17 +24,17 @@ It is aimed at home-lab and small-team operators who want persistent self-hosted
 
 - **Manager**: this project’s Go process (API + UI) — the control plane.
 - **Runner container**: a sibling Docker container based on [`myoung34/github-runner`](https://github.com/myoung34/docker-github-actions-runner) (configurable), registered to a GitHub URL with a short-lived registration token (minted via PAT or pasted manually).
-- **Expected config**: records in `/data/runners.json` (name, URL, labels, container/volume names, runtime limits, optional cache). Registration tokens and PATs are not stored in JSON; registration tokens are passed to the container env only until registration succeeds.
+- **Expected config**: records in `/data/runners.json` (name, URL, labels, container/volume names, runtime limits, optional cache, optional workdir host path). Registration tokens and PATs are not stored in JSON; registration tokens are passed to the container env only until registration succeeds.
 - **Persistent cache**: optional named volume or host bind (default `/cache`) for incremental CI; share across runners by reusing the same volume name or host path.
-- **Automatic workdir**: per-runner Docker volume exposed via its host Mountpoint so sibling Docker jobs can mount `$GITHUB_WORKSPACE` — no operator path required.
+- **Sibling-Docker workdir**: host directory same-path bind (default `/srv/gha-work/<name>`) so jobs can `docker run -v $GITHUB_WORKSPACE`; agent `workFolder` must match (reconfigure when it drifts).
 
 ## Core User Flows
 
-1. **Create runner** — enter name, GitHub project URL, and either a registration token or rely on a configured PAT; optional labels, runtime limits, and persistent cache. Workdir is created automatically.
-2. **Monitor** — table of local runners with Docker status; start / stop / restart / recreate / delete; orphan-container warnings when present.
-3. **Edit** — update labels, image, resources, env, docker-sock override, optional persistent cache; optionally apply by recreating the container (registration + auto workdir kept).
+1. **Create runner** — enter name, GitHub project URL, and either a registration token or rely on a configured PAT; optional labels, runtime limits, cache, and workdir host path (default `/srv/gha-work/<name>`).
+2. **Monitor** — table of local runners with Docker status; start / stop / restart / recreate / delete; orphan-container warnings when present; workdir mismatch when agent `workFolder` ≠ host bind.
+3. **Edit** — update labels, image, resources, env, docker-sock override, cache, workdir; apply recreates and reconfigures when workdir must move.
 4. **Logs** — view and follow the runner container’s stdout/stderr.
-5. **Delete** — remove local container, registration volume, and auto work volume; shared cache volumes only when unreferenced. With PAT, also deregister from GitHub when possible.
+5. **Delete** — remove local container and registration volume; host workdir trees are left on disk; shared cache volumes only when unreferenced. With PAT, also deregister from GitHub when possible.
 
 ## Non-Goals
 

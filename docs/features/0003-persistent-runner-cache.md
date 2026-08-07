@@ -2,11 +2,11 @@
 
 ## Status
 
-Cache implemented in 0.3.0; automatic Mountpoint workdir in 0.3.1.
+Cache implemented in 0.3.0. Sibling-Docker workdir is a separate host-bind + reconfigure flow — see [0004](0004-sibling-docker-workdir-host-bind.md).
 
 ## Goal
 
-Enable long-running / incremental CI on managed runners: a durable cache mount (named Docker volume or host bind, default `/cache`), plus an **automatic** job workdir that is sibling-Docker safe, while keeping registration on `/runner/data`.
+Enable long-running / incremental CI on managed runners: a durable cache mount (named Docker volume or host bind, default `/cache`), plus a sibling-Docker-safe job workdir, while keeping registration on `/runner/data`.
 
 ## Scope
 
@@ -15,11 +15,11 @@ Enable long-running / incremental CI on managed runners: a durable cache mount (
 - Per-runner **cache** mount: named volume or host bind, default target `/cache`
 - Shared cache by using the same `volume_name` or `host_path` on multiple runners
 - Optional **read-only** cache mount
-- **Automatic workdir** via Docker volume Mountpoint same-path bind (see [0004](0004-sibling-docker-workdir-host-bind.md))
+- **Sibling-Docker workdir** via host same-path bind + agent reconfigure when `workFolder` drifts (see [0004](0004-sibling-docker-workdir-host-bind.md))
 - Stop timeout **120s** for managed runners
 - Delete refcount for shared cache volumes; never delete bind host paths
 - Apply-time cleanup of stale unreferenced cache volumes
-- UI Advanced fields for cache; workdir requires no operator input
+- UI Advanced fields for cache and optional workdir host path
 
 ### Out of scope
 
@@ -35,7 +35,7 @@ Enable long-running / incremental CI on managed runners: a durable cache mount (
 |------|---------|----------------|---------|---------------------|
 | Registration | Named volume `*-data` | `/runner/data` | Never | Always |
 | Cache | Named volume or host bind | `/cache` | Same name/path across runners | Volume only if unreferenced; never host path |
-| Workdir (automatic) | Named volume `*-work` → host Mountpoint same-path bind | Mountpoint path | Never | Always (volume) |
+| Workdir | Host directory same-path bind | `/srv/gha-work/<name>` | Never | Never (host path left on disk) |
 
 ### Volume vs bind (cache)
 
@@ -46,21 +46,20 @@ Do **not** rely on HA `map: share` for runner caches — the Supervisor maps tho
 
 ## Contract notes
 
-- Schema version **3** (additive).
+- Schema version **4** (adds `workdir_host_path`).
 - Changing cache settings requires container recreate (`apply=true`).
-- Recreate re-resolves the work volume Mountpoint and remounts it; registration files on `*-data` are reused (no re-registration).
-- **Upgrade:** recreate runners after moving to automatic Mountpoint workdirs so sibling Docker jobs see the new bind.
+- Changing workdir (or fixing a `workFolder` mismatch) requires recreate **and** agent reconfigure (token/PAT); env alone is not enough.
 - Large caches live in Docker volumes / host disk — **not** in addon `/data` HA backups.
-- **Ownership:** default runner image is root (volume Mountpoints OK). For non-root images, `chown` work/cache host paths to the runner uid (often `1000`) unless cache `read_only`.
-- **Disk:** prune unused Docker volumes and host cache trees periodically.
+- **Ownership:** default runner image is root. For non-root images, `chown` work/cache host paths to the runner uid (often `1000`) unless cache `read_only`.
+- **Disk:** prune unused Docker volumes and host cache/workdir trees periodically.
 
 ## Operator recipe (shared host cache)
 
 - `cache.enabled=true`, `cache.type=bind`, `cache.host_path=/srv/runner-cache`, `cache.target=/cache`
-- Workdir: no configuration — created automatically per runner
+- Workdir: default `/srv/gha-work/<name>` or set `workdir_host_path`
 - `extra_env` for workflow cache roots as needed
 
 ```bash
-sudo mkdir -p /srv/runner-cache
-sudo chown -R 1000:1000 /srv/runner-cache
+sudo mkdir -p /srv/runner-cache /srv/gha-work/my-runner
+sudo chown -R 1000:1000 /srv/runner-cache /srv/gha-work/my-runner
 ```

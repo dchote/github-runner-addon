@@ -188,17 +188,31 @@
       </p>
     </template>
 
+    <v-text-field
+      :model-value="workdirHostPath"
+      class="mb-2"
+      label="Workdir host path (optional)"
+      :hint="workdirHint"
+      persistent-hint
+      variant="outlined"
+      density="comfortable"
+      hide-details="auto"
+      autocomplete="off"
+      :disabled="disabled"
+      @update:model-value="$emit('update:workdirHostPath', $event)"
+    />
     <p class="text-body-small brand-text-muted mb-0">
-      Job workdir is managed automatically: a per-runner Docker volume is created and
-      same-path bind-mounted so sibling
-      <code>docker run -v $GITHUB_WORKSPACE</code>
-      works when the Docker socket is mounted. Recreate keeps registration and this workdir —
-      no manual host path or re-registration required.
+      Sibling Docker jobs need a real host directory same-path bind (not a Docker volume
+      <code>_data</code> path). Ensure the path is writable by the runner user (often
+      <code>chown -R 1000:1000</code>). Changing this and applying reconfigures the agent
+      (<code>workFolder</code>) — token or PAT required.
     </p>
   </div>
 </template>
 
 <script setup>
+import { computed } from 'vue'
+
 const sockItems = [
   { title: 'Use global default', value: null },
   { title: 'Yes (mount host socket)', value: true },
@@ -210,7 +224,7 @@ const cacheTypeItems = [
   { title: 'Host path (bind)', value: 'bind' },
 ]
 
-defineProps({
+const props = defineProps({
   labels: { type: Array, default: () => [] },
   image: { type: String, default: '' },
   cpuLimit: { type: Number, default: 0 },
@@ -224,7 +238,14 @@ defineProps({
   cacheHostPath: { type: String, default: '' },
   cacheTarget: { type: String, default: '/cache' },
   cacheReadOnly: { type: Boolean, default: false },
+  workdirHostPath: { type: String, default: '' },
+  runnerName: { type: String, default: '' },
   disabled: { type: Boolean, default: false },
+})
+
+const workdirHint = computed(() => {
+  const n = String(props.runnerName || '').trim() || '<name>'
+  return `Empty uses /srv/gha-work/${n} on the Docker host`
 })
 
 defineEmits([
@@ -241,5 +262,6 @@ defineEmits([
   'update:cacheHostPath',
   'update:cacheTarget',
   'update:cacheReadOnly',
+  'update:workdirHostPath',
 ])
 </script>

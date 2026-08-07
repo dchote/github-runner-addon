@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -69,9 +70,15 @@ type Manager struct {
 	orphansMu     sync.RWMutex
 	orphans       []OrphanView
 
-	// workdirMP caches Docker volume Mountpoints (stable for a volume's lifetime).
-	workdirMPMu sync.RWMutex
-	workdirMP   map[string]string
+	// agentWorkFolder caches .runner workFolder per data volume (invalidated on reconfigure/delete).
+	agentWFMu sync.RWMutex
+	agentWF   map[string]agentWorkFolderCache
+}
+
+type agentWorkFolderCache struct {
+	folder string
+	err    string // non-empty when last read failed (other than missing file)
+	ok     bool   // true if folder was read successfully (may be empty)
 }
 
 type OrphanView struct {
@@ -93,7 +100,7 @@ func NewManager(st *store.Store, d *docker.Client, gh *github.Client, image stri
 		MountDockerSock: mountSock,
 		Version:         version,
 		createLimiter:   newRateLimiter(10, time.Minute),
-		workdirMP:       make(map[string]string),
+		agentWF:         make(map[string]agentWorkFolderCache),
 	}
 }
 
@@ -109,6 +116,7 @@ type CreateRequest struct {
 	NetworkMode     string             `json:"network_mode,omitempty"`
 	MountDockerSock *bool              `json:"mount_docker_sock,omitempty"`
 	Cache           *store.CacheConfig `json:"cache,omitempty"`
+	WorkdirHostPath string             `json:"workdir_host_path,omitempty"`
 }
 
 type PatchRequest struct {
@@ -121,8 +129,9 @@ type PatchRequest struct {
 	ResetMountDockerSock bool               `json:"reset_mount_docker_sock,omitempty"` // clear per-runner override
 	Image                *string            `json:"image,omitempty"`
 	Cache                *store.CacheConfig `json:"cache,omitempty"`
-	Apply                bool               `json:"apply"`           // if true, recreate container to apply
-	Token                string             `json:"token,omitempty"` // optional when apply=true
+	WorkdirHostPath      *string            `json:"workdir_host_path,omitempty"` // set "" to reset to default
+	Apply                bool               `json:"apply"`                       // if true, recreate container to apply
+	Token                string             `json:"token,omitempty"`             // optional when apply=true
 }
 
 type RecreateRequest struct {
@@ -131,11 +140,12 @@ type RecreateRequest struct {
 
 type View struct {
 	store.Runner
-	Status          string `json:"status"`
-	Running         bool   `json:"running"`
-	WorkdirResolved string `json:"workdir_resolved,omitempty"` // live Mountpoint used for RUNNER_WORKDIR
-	WorkdirError    string `json:"workdir_error,omitempty"`    // set when Mountpoint resolve fails
-	WorkVolumeName  string `json:"work_volume_name,omitempty"` // gha-runner-<name>-work
+	Status           string `json:"status"`
+	Running          bool   `json:"running"`
+	WorkdirEffective string `json:"workdir_effective,omitempty"` // resolved host path (RUNNER_WORKDIR / bind)
+	WorkdirAgent     string `json:"workdir_agent,omitempty"`     // workFolder from /runner/data/.runner
+	WorkdirMismatch  bool   `json:"workdir_mismatch,omitempty"`  // agent workFolder ≠ effective path
+	WorkdirError     string `json:"workdir_error,omitempty"`     // diagnostics error reading .runner
 }
 
 func (m *Manager) PATConfigured() bool {
@@ -143,17 +153,20 @@ func (m *Manager) PATConfigured() bool {
 }
 
 func (m *Manager) enrich(ctx context.Context, r store.Runner) View {
-	v := View{Runner: r, Status: "unknown", WorkVolumeName: resolveWorkVolumeName(r)}
+	v := View{Runner: r, Status: "unknown", WorkdirEffective: resolveWorkdirHostPath(r)}
 	if m.Docker == nil {
 		return v
 	}
-	if v.WorkVolumeName != "" {
-		mp, err := m.cachedWorkdirMountpoint(ctx, v.WorkVolumeName)
+	if r.VolumeName != "" {
+		wf, err := m.readAgentWorkFolder(ctx, r.VolumeName)
 		if err != nil {
-			v.WorkdirError = err.Error()
-			slog.Warn("workdir mountpoint resolve failed", "volume", v.WorkVolumeName, "err", err)
-		} else {
-			v.WorkdirResolved = mp
+			if err.Error() != "no .runner" {
+				v.WorkdirError = err.Error()
+				slog.Warn("read .runner workFolder failed", "volume", r.VolumeName, "err", err)
+			}
+		} else if wf != "" {
+			v.WorkdirAgent = wf
+			v.WorkdirMismatch = path.Clean(wf) != path.Clean(v.WorkdirEffective)
 		}
 	}
 	info, err := m.Docker.InspectByName(ctx, r.ContainerName)
@@ -165,36 +178,69 @@ func (m *Manager) enrich(ctx context.Context, r store.Runner) View {
 	return v
 }
 
-// cachedWorkdirMountpoint returns a volume Mountpoint, using an in-memory cache
-// so list polling does not re-Inspect every runner on every refresh.
-func (m *Manager) cachedWorkdirMountpoint(ctx context.Context, vol string) (string, error) {
-	m.workdirMPMu.RLock()
-	if mp, ok := m.workdirMP[vol]; ok {
-		m.workdirMPMu.RUnlock()
-		return mp, nil
+func (m *Manager) readAgentWorkFolder(ctx context.Context, volumeName string) (string, error) {
+	m.agentWFMu.RLock()
+	if c, hit := m.agentWF[volumeName]; hit {
+		m.agentWFMu.RUnlock()
+		if c.err != "" {
+			return "", fmt.Errorf("%s", c.err)
+		}
+		if c.ok {
+			if c.folder == "" {
+				return "", fmt.Errorf("no .runner")
+			}
+			return c.folder, nil
+		}
+	} else {
+		m.agentWFMu.RUnlock()
 	}
-	m.workdirMPMu.RUnlock()
 
-	mp, err := m.Docker.VolumeMountpoint(ctx, vol)
+	raw, err := m.Docker.ReadVolumeFile(ctx, volumeName, runnerConfigFile)
 	if err != nil {
+		// Treat missing .runner as empty (not an enrich error).
+		if strings.Contains(err.Error(), "exit 1") {
+			m.cacheAgentWorkFolder(volumeName, "", "", true)
+			return "", fmt.Errorf("no .runner")
+		}
+		m.cacheAgentWorkFolder(volumeName, "", err.Error(), false)
 		return "", err
 	}
-	m.workdirMPMu.Lock()
-	if m.workdirMP == nil {
-		m.workdirMP = make(map[string]string)
+	wf, err := parseRunnerWorkFolder(raw)
+	if err != nil {
+		m.cacheAgentWorkFolder(volumeName, "", err.Error(), false)
+		return "", err
 	}
-	m.workdirMP[vol] = mp
-	m.workdirMPMu.Unlock()
-	return mp, nil
+	m.cacheAgentWorkFolder(volumeName, wf, "", true)
+	return wf, nil
 }
 
-func (m *Manager) invalidateWorkdirMountpoint(vol string) {
-	if vol == "" {
+func (m *Manager) cacheAgentWorkFolder(volumeName, folder, errMsg string, ok bool) {
+	m.agentWFMu.Lock()
+	if m.agentWF == nil {
+		m.agentWF = make(map[string]agentWorkFolderCache)
+	}
+	m.agentWF[volumeName] = agentWorkFolderCache{folder: folder, err: errMsg, ok: ok}
+	m.agentWFMu.Unlock()
+}
+
+func (m *Manager) invalidateAgentWorkFolder(volumeName string) {
+	if volumeName == "" {
 		return
 	}
-	m.workdirMPMu.Lock()
-	delete(m.workdirMP, vol)
-	m.workdirMPMu.Unlock()
+	m.agentWFMu.Lock()
+	delete(m.agentWF, volumeName)
+	m.agentWFMu.Unlock()
+}
+
+// clearRunnerConfigForReconfigure removes .runner so myoung34 will run config.sh
+// with the current RUNNER_WORKDIR (--work). Credentials on the volume are kept;
+// a registration token or PAT is required for the reconfigure call.
+func (m *Manager) clearRunnerConfigForReconfigure(ctx context.Context, volumeName string) error {
+	if volumeName == "" {
+		return nil
+	}
+	m.invalidateAgentWorkFolder(volumeName)
+	return m.Docker.RemoveVolumeFiles(ctx, volumeName, runnerConfigFile)
 }
 
 func normalizeStatus(info docker.InspectInfo) (status string, running bool) {
@@ -342,6 +388,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 		MountDockerSock: req.MountDockerSock,
 		Cache:           cache,
 	}
+	rec.WorkdirHostPath = normalizeWorkdirHostPath(rec, req.WorkdirHostPath)
+	if err := validateWorkdirHostPath(resolveWorkdirHostPath(rec)); err != nil {
+		return View{}, err
+	}
 	if err := m.Store.Add(rec); err != nil {
 		return View{}, err
 	}
@@ -386,15 +436,9 @@ func (m *Manager) rollbackFailedCreate(rec store.Runner, createErr error) (View,
 	return View{}, createErr
 }
 
-// removeOwnedPersistenceVolumes removes the auto work volume and auto-named cache volume.
+// removeOwnedPersistenceVolumes removes auto-named cache volumes and obsolete *-work volumes.
 func (m *Manager) removeOwnedPersistenceVolumes(ctx context.Context, rec store.Runner) {
-	if rec.ContainerName != "" {
-		work := rec.ContainerName + "-work"
-		m.invalidateWorkdirMountpoint(work)
-		if err := m.Docker.RemoveVolume(ctx, work); err != nil && !docker.IsNotFound(err) {
-			slog.Warn("remove work volume", "volume", work, "err", err)
-		}
-	}
+	m.removeLegacyWorkVolume(ctx, rec)
 	if cacheVolumeOwned(rec) {
 		if name := resolveCacheVolumeName(rec); name != "" {
 			if err := m.Docker.RemoveVolume(ctx, name); err != nil && !docker.IsNotFound(err) {
@@ -404,9 +448,17 @@ func (m *Manager) removeOwnedPersistenceVolumes(ctx context.Context, rec store.R
 	}
 }
 
+func (m *Manager) removeLegacyWorkVolume(ctx context.Context, rec store.Runner) {
+	if vol := legacyWorkVolumeName(rec); vol != "" {
+		if err := m.Docker.RemoveVolume(ctx, vol); err != nil && !docker.IsNotFound(err) {
+			slog.Warn("remove legacy work volume", "volume", vol, "err", err)
+		}
+	}
+}
+
 func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, orgName string, waitRegister bool) error {
-	workdirBind, err := m.resolveWorkdirBind(ctx, rec)
-	if err != nil {
+	workdirBind := resolveWorkdirHostPath(rec)
+	if err := validateWorkdirHostPath(workdirBind); err != nil {
 		return err
 	}
 	env := m.buildEnv(rec, token, orgName, workdirBind)
@@ -416,7 +468,7 @@ func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, o
 	}
 	extra := buildExtraMounts(rec, workdirBind)
 	stopSecs := StopTimeoutSecs
-	_, err = m.Docker.CreateAndStart(ctx, docker.CreateOpts{
+	_, err := m.Docker.CreateAndStart(ctx, docker.CreateOpts{
 		Name:  rec.ContainerName,
 		Image: rec.Image,
 		Env:   env,
@@ -454,25 +506,6 @@ func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, o
 		}
 	}
 	return nil
-}
-
-// resolveWorkdirBind ensures the per-runner work volume and returns its Docker
-// Mountpoint for a same-path bind (sibling-Docker safe RUNNER_WORKDIR).
-func (m *Manager) resolveWorkdirBind(ctx context.Context, rec store.Runner) (string, error) {
-	vol := resolveWorkVolumeName(rec)
-	if vol == "" {
-		return "", fmt.Errorf("resolve workdir: empty work volume name")
-	}
-	if err := m.Docker.EnsureVolume(ctx, vol); err != nil {
-		return "", fmt.Errorf("ensure work volume: %w", err)
-	}
-	// Fresh inspect after ensure — avoid stale cache if the volume was recreated.
-	m.invalidateWorkdirMountpoint(vol)
-	mp, err := m.cachedWorkdirMountpoint(ctx, vol)
-	if err != nil {
-		return "", fmt.Errorf("work volume mountpoint: %w", err)
-	}
-	return mp, nil
 }
 
 func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string) []string {
@@ -635,7 +668,13 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 			rec.Cache = normalizeCache(req.Cache)
 		}
 	}
+	if req.WorkdirHostPath != nil {
+		rec.WorkdirHostPath = normalizeWorkdirHostPath(rec, *req.WorkdirHostPath)
+	}
 	if err := validateCache(rec.Cache); err != nil {
+		return View{}, err
+	}
+	if err := validateWorkdirHostPath(resolveWorkdirHostPath(rec)); err != nil {
 		return View{}, err
 	}
 	if err := m.Store.Update(rec); err != nil {
@@ -653,8 +692,7 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 
 // cleanupStalePersistenceVolumes removes cache volumes that the runner no longer
 // references after a successful apply. Shared cache volumes are removed only when
-// unreferenced by every store runner. Work volumes are per-container-name and never
-// change on edit, so they are not cleaned up here.
+// unreferenced by every store runner.
 func (m *Manager) cleanupStalePersistenceVolumes(ctx context.Context, before, after store.Runner) {
 	if m.Docker == nil {
 		return
@@ -696,26 +734,46 @@ func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) 
 	if err != nil {
 		return View{}, err
 	}
+	desiredWork := resolveWorkdirHostPath(rec)
+	if err := validateWorkdirHostPath(desiredWork); err != nil {
+		return View{}, err
+	}
 
 	containerInfo, _ := m.Docker.InspectByName(ctx, rec.ContainerName)
 	volExists, volErr := m.Docker.VolumeExists(ctx, rec.VolumeName)
 	if volErr != nil {
 		slog.Warn("volume inspect failed", "volume", rec.VolumeName, "err", volErr)
 	}
-	// Registration files live on the volume. Reuse when the volume exists (even if the
-	// container is missing). Fresh registration is required when there is no volume.
-	canReuseRegistration := volExists
-	needsToken := !canReuseRegistration
+
+	// myoung34 only applies --work at configure time. If .runner workFolder ≠ desired
+	// host bind, clear .runner and reconfigure (token/PAT required). Env/mount alone is not enough.
+	needsReconfigure := !volExists
+	if volExists {
+		wf, wfErr := m.readAgentWorkFolder(ctx, rec.VolumeName)
+		if wfErr != nil {
+			// No .runner yet → configure will run on start; token still needed.
+			needsReconfigure = true
+			slog.Info("recreate: no usable .runner; will configure", "volume", rec.VolumeName, "err", wfErr)
+		} else if path.Clean(wf) != path.Clean(desiredWork) {
+			needsReconfigure = true
+			slog.Info("recreate: workFolder mismatch; forcing reconfigure",
+				"agent", wf, "desired", desiredWork)
+		}
+	}
 
 	token := strings.TrimSpace(req.Token)
-	if needsToken {
+	if needsReconfigure {
 		var resolveErr error
 		token, resolveErr = m.resolveRegistrationToken(ctx, rec.URL, token)
 		if resolveErr != nil {
-			return View{}, fmt.Errorf("%w: recreate requires a registration token or GITHUB_PAT when the runner data volume is missing", ErrValidation)
+			return View{}, fmt.Errorf("%w: changing or fixing workdir requires reconfigure — provide a registration token or configure GITHUB_PAT (agent workFolder is set only at configure time)", ErrValidation)
+		}
+		if volExists {
+			if err := m.clearRunnerConfigForReconfigure(ctx, rec.VolumeName); err != nil {
+				return View{}, fmt.Errorf("clear .runner for workdir reconfigure: %w", err)
+			}
 		}
 	} else if token == "" && m.PATConfigured() {
-		// Optional refresh of registration when operator has PAT (covers wiped volume contents).
 		if minted, err := m.GitHub.MintRegistrationToken(ctx, rec.URL); err != nil {
 			slog.Warn("recreate: optional mint failed; reusing volume registration", "err", err)
 		} else {
@@ -724,16 +782,16 @@ func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) 
 	}
 
 	if containerInfo.Exists {
-		// Use the longer grace when persistence is (or stays) enabled so the
-		// listener can release its GitHub session before recreate.
 		if err := m.Docker.RemoveContainerTimeout(ctx, rec.ContainerName, StopTimeoutSecs); err != nil && !docker.IsNotFound(err) {
 			return View{}, fmt.Errorf("remove container: %w", err)
 		}
 	}
+	m.removeLegacyWorkVolume(ctx, rec)
 	wait := token != ""
 	if err := m.startContainer(ctx, rec, token, info.OrgName(), wait); err != nil {
 		return View{}, err
 	}
+	m.invalidateAgentWorkFolder(rec.VolumeName)
 	return m.Get(ctx, id)
 }
 
@@ -787,14 +845,10 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	// Drop auto-managed work volume for this runner (exists for the runner lifetime).
-	if r.ContainerName != "" {
-		work := r.ContainerName + "-work"
-		m.invalidateWorkdirMountpoint(work)
-		if err := m.Docker.RemoveVolume(ctx, work); err != nil && !docker.IsNotFound(err) {
-			slog.Warn("delete: remove work volume", "volume", work, "err", err)
-		}
-	}
+	// Best-effort cleanup of obsolete Mountpoint work volumes from 0.3.1–0.3.3.
+	// Host workdir binds are never deleted.
+	m.removeLegacyWorkVolume(ctx, r)
+	m.invalidateAgentWorkFolder(r.VolumeName)
 	if cacheVol := resolveCacheVolumeName(r); cacheVol != "" {
 		others, listErr := m.Store.List()
 		removeCache := false

@@ -30,15 +30,15 @@ Per-runner mounts (see [0003-persistent-runner-cache](../features/0003-persisten
 | Mount | When | Storage | Target | Notes |
 |-------|------|---------|--------|-------|
 | Cache | optional (`cache.enabled`) | Named volume or host bind | default `/cache` | Same `volume_name` / `host_path` across runners shares the cache |
-| Workdir | **always (automatic)** | Named volume `*-work` | Docker **Mountpoint** (same-path bind) | `RUNNER_WORKDIR` = Mountpoint; sibling-Docker safe |
+| Workdir | **always** | Host directory | default `/srv/gha-work/<name>` (same-path bind) | `RUNNER_WORKDIR` + agent `workFolder` must match; not a Docker volume `_data` path |
 
-Prefer **named volumes** on Home Assistant OS. Cache host binds use **Docker host** paths (not addon `/data` or `/share`). Cache/work Docker volumes are outside HA `/data` backups.
+Prefer **named volumes** for cache on Home Assistant OS. Workdir and cache host binds use **Docker host** paths (not addon `/data` or `/share`).
 
-Job workdir is created with the runner and removed on delete. Recreate re-reads the volume Mountpoint and remounts it; the registration volume is kept (no re-registration). After upgrading to automatic Mountpoint workdirs, **recreate** each runner so containers pick up the new bind (registration is kept).
+`myoung34/github-runner` sets `--work` only at **configure** time. Recreate remounts the host bind and sets `RUNNER_WORKDIR`, but if `/runner/data/.runner` `workFolder` differs, the manager clears `.runner` and reconfigures (registration token or PAT required). Env alone never moves the agent workdir.
 
 Container `StopTimeout` is **120s** for managed runners. Stop/restart use the container’s configured timeout, or **30s** if unset (e.g. older containers).
 
-**Permissions:** the default `myoung34/github-runner` image runs as root, so Docker volume Mountpoints and host cache binds are writable. If you override to a non-root image/user, ensure the work Mountpoint and any cache host path are writable by that uid (often `1000`), or mount cache read-only. Sensitive paths (`/`, `/etc`, `/proc`, `/sys`, docker.sock) are rejected as cache host sources and as container targets.
+**Permissions:** the default image runs as root. For non-root images/users, `chown` work and cache host paths to that uid (often `1000`), or mount cache read-only. Rejected paths include `/`, `/etc`, `/proc`, `/sys`, docker.sock, and workdir under `/var/lib/docker`.
 
 **Disk hygiene:** unused named volumes and large host cache trees are not pruned automatically — remove them with Docker/`rm` when cold. Applying a config that disables or renames an unreferenced cache volume deletes that volume after a successful recreate.
 

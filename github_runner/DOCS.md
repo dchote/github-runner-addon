@@ -15,7 +15,7 @@ For a fuller product description, install notes, and attribution, see the [repos
 1. Open the app UI (ingress panel).
 2. Click **Create runner**.
 3. Enter a unique **name**, the **GitHub project URL** (repository or organization), and a **registration token** (optional when a PAT is configured).
-4. Optionally set labels, CPU/memory limits, persistent cache, and other runtime fields. Job workdir is created automatically.
+4. Optionally set labels, CPU/memory limits, persistent cache, workdir host path (default `/srv/gha-work/<name>`), and other runtime fields.
 5. Monitor status in the table; use **Edit**, **Logs**, **Recreate**, and lifecycle actions as needed.
 
 Registration tokens are passed to the runner container only until registration succeeds (then scrubbed from container env). They are not stored in `runners.json`. The PAT is never written into runner containers.
@@ -24,11 +24,18 @@ Registration tokens are passed to the runner container only until registration s
 
 Runner expected configuration is stored at `/data/runners.json` (Home Assistant’s standard app data directory). That path is always mounted, included in HA backups, and does not require extra `map:` entries.
 
-Registration credentials live in a Docker named volume per runner (`*-data`). Each runner also gets an automatic work volume (`*-work`) whose Docker Mountpoint is same-path bind-mounted so sibling `docker run -v $GITHUB_WORKSPACE` works when the Docker socket is mounted — no manual host path. Optional **persistent cache** (named volume or host bind at `/cache`) is separate. Large volumes are **not** part of HA `/data` backups. Prefer named volumes for cache on HAOS; reuse the same cache volume name (or host path) across runners to share a cache.
+Registration credentials live in a Docker named volume per runner (`*-data`). Job workdir is a **host directory** same-path bind (default `/srv/gha-work/<name>`) so sibling `docker run -v $GITHUB_WORKSPACE` works with the Docker socket — not a Docker volume `_data` path. Optional **persistent cache** (named volume or host bind at `/cache`) is separate. Large volumes are **not** part of HA `/data` backups.
 
-**Recreate** remounts the automatic workdir Mountpoint and keeps the registration volume (no re-registration). After upgrading from optional `/work` mounts, recreate each runner so the Mountpoint bind applies. Deleting a runner removes its work volume with it.
+**Recreate / Save & apply:** remounts the host workdir and sets `RUNNER_WORKDIR`. If the agent `.runner` `workFolder` does not match, the addon clears `.runner` and reconfigures (PAT or registration token required). Env alone never moves the agent workdir. Deleting a runner does **not** delete the host workdir tree.
 
-The default runner image runs as root (volume Mountpoints are writable). For non-root images, or host-path caches, make paths writable by the runner uid (often `1000`), e.g. `chown -R 1000:1000 /srv/runner-cache`, or enable **Read-only cache** in Advanced if workflows only need to read. Prune unused Docker volumes / host cache trees periodically — the addon does not enforce disk quotas.
+Prepare host paths (example):
+
+```bash
+sudo mkdir -p /srv/gha-work/my-runner /srv/runner-cache
+sudo chown -R 1000:1000 /srv/gha-work/my-runner /srv/runner-cache
+```
+
+For non-root runner images, ensure those paths are writable by the runner uid, or enable **Read-only cache** if workflows only need to read. Prune unused Docker volumes / host trees periodically — the addon does not enforce disk quotas.
 
 ## Configuration
 
@@ -46,7 +53,7 @@ Classic: `repo` for repository runners; org runner admin / `admin:org` for organ
 ## Notes
 
 - Each runner runs as a separate Docker container (not inside the addon process).
-- Deleting a runner removes the local container, registration volume, and workdir volume; a shared cache volume is removed only when no other runner references it. Host bind cache paths are never deleted. With a PAT, delete also attempts GitHub deregistration.
+- Deleting a runner removes the local container and registration volume; host workdir and cache bind paths are never deleted. A shared cache volume is removed only when no other runner references it. With a PAT, delete also attempts GitHub deregistration.
 - Access is network-trust via Home Assistant ingress — do not expose the app on a public network without a reverse proxy you control.
 - Prefer pinning `runner_image` to a digest in production.
 

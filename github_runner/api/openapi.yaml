@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GitHub Runner Manager API
-  version: 0.3.3
+  version: 0.4.0
   description: |
     Control-plane API for Docker-based GitHub Actions self-hosted runners.
 
@@ -270,6 +270,12 @@ components:
           description: Override global MOUNT_DOCKER_SOCK for this runner
         cache:
           $ref: "#/components/schemas/CacheConfig"
+        workdir_host_path:
+          type: string
+          description: |
+            Absolute Docker-host path same-path bind-mounted as RUNNER_WORKDIR.
+            Empty defaults to /srv/gha-work/<normalized-name>. Must not be under
+            /var/lib/docker. Changing workdir requires agent reconfigure (token/PAT).
     PatchRunnerRequest:
       type: object
       properties:
@@ -296,18 +302,25 @@ components:
           description: Clear per-runner docker-sock override (use global default)
         cache:
           $ref: "#/components/schemas/CacheConfig"
+        workdir_host_path:
+          type: string
+          description: Set empty string to reset to the default /srv/gha-work/<name>
         apply:
           type: boolean
           description: When true, recreate the container to apply runtime changes
         token:
           type: string
-          description: Optional registration token when apply=true and volume cannot be reused
+          description: |
+            Required when apply=true if the data volume is missing or workdir reconfigure
+            is needed (agent workFolder ≠ host bind); optional otherwise when PAT is set
     RecreateRunnerRequest:
       type: object
       properties:
         token:
           type: string
-          description: Required when the runner data volume is missing and no PAT is configured; otherwise optional for volume reuse
+          description: |
+            Required when the data volume is missing, or when .runner workFolder does not
+            match the host workdir bind (reconfigure). Optional for plain remount when PAT set.
 
     RunnerStatus:
       type: string
@@ -354,15 +367,21 @@ components:
           type: boolean
         cache:
           $ref: "#/components/schemas/CacheConfig"
-        work_volume_name:
+        workdir_host_path:
           type: string
-          description: Auto-managed work volume (gha-runner-<name>-work)
-        workdir_resolved:
+          description: Stored override; empty means default /srv/gha-work/<name>
+        workdir_effective:
           type: string
-          description: Docker volume Mountpoint used as RUNNER_WORKDIR
+          description: Resolved host path used for RUNNER_WORKDIR and the same-path bind
+        workdir_agent:
+          type: string
+          description: workFolder from /runner/data/.runner (set only at configure time)
+        workdir_mismatch:
+          type: boolean
+          description: True when workdir_agent ≠ workdir_effective
         workdir_error:
           type: string
-          description: Present when the work volume Mountpoint could not be resolved
+          description: Present when reading .runner failed
         status:
           $ref: "#/components/schemas/RunnerStatus"
         running:

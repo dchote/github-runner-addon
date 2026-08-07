@@ -66,6 +66,7 @@ export function buildRuntimePayload({
   cacheHostPath = '',
   cacheTarget = '/cache',
   cacheReadOnly = false,
+  workdirHostPath = '',
 }) {
   const payload = {}
   const labelList = normalizeLabelList(labels)
@@ -81,6 +82,7 @@ export function buildRuntimePayload({
   } else {
     payload.mount_docker_sock = null
   }
+  payload.workdir_host_path = String(workdirHostPath || '').trim()
 
   if (cacheEnabled) {
     const type = cacheType === 'bind' ? 'bind' : 'volume'

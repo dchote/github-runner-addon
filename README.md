@@ -99,7 +99,7 @@ If you use this addon, please also consider starring and supporting [myoung34/do
 | [Build and test](docs/build-and-test.md) | Dev build, tests, CI images |
 | [Container runtime](docs/patterns/container-runtime.md) | Docker labels, volumes, cache/workdir, sock mount |
 | [Persistent cache](docs/features/0003-persistent-runner-cache.md) | Shared `/cache` mounts |
-| [Auto sibling workdir](docs/features/0004-sibling-docker-workdir-host-bind.md) | Automatic Mountpoint workdir for `docker run -v $GITHUB_WORKSPACE` |
+| [Sibling Docker workdir](docs/features/0004-sibling-docker-workdir-host-bind.md) | Host same-path bind + agent `workFolder` reconfigure for `docker run -v $GITHUB_WORKSPACE` |
 | [API design](docs/patterns/api-design.md) | REST envelope, endpoints, WebSocket |
 | [0001 Fleet manager](docs/features/0001-runner-fleet-manager.md) | Create / lifecycle / logs contract |
 | [0002 Hardened fleet](docs/features/0002-hardened-persistent-fleet.md) | PAT, recreate, edit, security close-out |

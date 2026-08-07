@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- **Fix sibling-Docker workdir:** use a real host directory same-path bind (default `/srv/gha-work/<name>`, optional `workdir_host_path`) instead of Docker volume Mountpoints
+- Recreate/apply clears `.runner` and reconfigures when agent `workFolder` ≠ host bind (token/PAT required) — `RUNNER_WORKDIR` env alone is not enough
+- UI/API diagnostics: `workdir_effective`, `workdir_agent`, `workdir_mismatch`; reject `/var/lib/docker/…` workdir paths
+- Schema version 4; docs [0004](../docs/features/0004-sibling-docker-workdir-host-bind.md) updated
+
 ## 0.3.3
 
 - Add `./scripts/bump-version.sh` and a Cursor release rule so tag/release bumps keep `config.yaml`, `DefaultVersion`, OpenAPI, Dockerfile `BUILD_VERSION`, and CHANGELOG in sync

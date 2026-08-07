@@ -19,7 +19,8 @@
     </v-alert>
     <p class="text-body-medium brand-text-muted mb-4">
       Name and GitHub URL cannot be changed — create a new runner instead. Apply recreates the
-      container so runtime changes take effect (registration volume is kept when present).
+      container. If the agent workdir does not match the host bind, apply clears
+      <code>.runner</code> and reconfigures (token or PAT required).
     </p>
     <v-form ref="form" @submit.prevent="submit(false)">
       <p class="text-body-medium mb-4">
@@ -40,6 +41,8 @@
         v-model:cache-host-path="cacheHostPath"
         v-model:cache-target="cacheTarget"
         v-model:cache-read-only="cacheReadOnly"
+        v-model:workdir-host-path="workdirHostPath"
+        :runner-name="runner?.name || ''"
         :disabled="submitting"
       />
       <v-switch
@@ -55,7 +58,7 @@
         v-if="apply && !patConfigured"
         v-model="token"
         class="mb-2"
-        label="Registration token (required if data volume is missing)"
+        label="Registration token (if volume missing or workdir reconfigure needed)"
         type="password"
         autocomplete="off"
         :disabled="submitting"
@@ -107,6 +110,7 @@ const cacheVolumeName = ref('')
 const cacheHostPath = ref('')
 const cacheTarget = ref('/cache')
 const cacheReadOnly = ref(false)
+const workdirHostPath = ref('')
 const apply = ref(false)
 const token = ref('')
 const submitting = ref(false)
@@ -134,6 +138,7 @@ watch(open, (v) => {
   cacheHostPath.value = cache.hostPath
   cacheTarget.value = cache.target
   cacheReadOnly.value = cache.readOnly
+  workdirHostPath.value = props.runner.workdir_host_path || ''
   apply.value = false
   token.value = ''
   error.value = ''
@@ -163,6 +168,7 @@ async function submit(forceApply) {
       cacheHostPath: cacheHostPath.value,
       cacheTarget: cacheTarget.value,
       cacheReadOnly: cacheReadOnly.value,
+      workdirHostPath: workdirHostPath.value,
     })
     const payload = {
       labels: runtime.labels,
@@ -172,6 +178,7 @@ async function submit(forceApply) {
       network_mode: runtime.network_mode,
       extra_env: runtime.extra_env,
       cache: runtime.cache,
+      workdir_host_path: runtime.workdir_host_path,
       apply: shouldApply,
     }
     if (runtime.mount_docker_sock === true || runtime.mount_docker_sock === false) {

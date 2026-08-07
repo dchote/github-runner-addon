@@ -11,7 +11,7 @@ import (
 var ErrNotFound = errors.New("runner not found")
 var ErrConflict = errors.New("runner name already exists")
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // CacheConfig is an optional persistent cache mount for job tooling / build caches.
 type CacheConfig struct {
@@ -41,6 +41,9 @@ type Runner struct {
 	NetworkMode     string            `json:"network_mode,omitempty"`
 	MountDockerSock *bool             `json:"mount_docker_sock,omitempty"` // nil = use global default
 	Cache           *CacheConfig      `json:"cache,omitempty"`
+	// WorkdirHostPath is an absolute Docker-host path same-path bind-mounted as RUNNER_WORKDIR.
+	// Empty → default /srv/gha-work/<normalized-name>. Must match .runner workFolder (set at configure time).
+	WorkdirHostPath string `json:"workdir_host_path,omitempty"`
 }
 
 type fileData struct {
