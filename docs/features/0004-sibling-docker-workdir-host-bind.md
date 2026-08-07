@@ -1,48 +1,35 @@
-# 0004 — Sibling Docker workdir (same-path host bind)
+# 0004 — Automatic sibling-Docker workdir
 
 ## Status
 
-Implemented.
+Implemented in 0.3.1.
 
 ## Goal
 
-Make Actions jobs that call `docker run -v $GITHUB_WORKSPACE:…` (goreleaser-cross, etc.) work when the runner container mounts the host Docker socket.
+Make Actions jobs that call `docker run -v $GITHUB_WORKSPACE:…` work when the runner mounts the host Docker socket — with no operator host-path configuration.
 
 ## Problem
 
-Ephemeral workdir (`/tmp/runner/work`) and named-volume workdir (`/work`) exist only **inside** the runner container. Sibling containers started via the host `docker.sock` resolve bind mounts on the **host**, so `$GITHUB_WORKSPACE` is empty/missing → e.g. `open .goreleaser-amd64.yaml: no such file or directory`.
+Paths that exist only inside the runner are not visible on the Docker host. Sibling containers started via `docker.sock` resolve bind mounts on the host, so `$GITHUB_WORKSPACE` is empty/missing.
 
 ## Solution
 
-Optional **`workdir_host_path`**: absolute path on the Docker host, bind-mounted at the **same absolute path** in the runner, and set as `RUNNER_WORKDIR`. Then `github.workspace` is a host-visible path and sibling `-v` mounts work.
+For every managed runner the control plane:
 
-| Mode | Storage | Sibling `docker run -v $GITHUB_WORKSPACE` |
-|------|---------|-------------------------------------------|
-| Default ephemeral | Container `/tmp/runner/work` | Broken |
-| `persist_workdir` volume | Named volume → `/work` | Broken |
-| **`workdir_host_path`** | Host bind → same path | Works |
+1. Ensures a per-runner named volume `gha-runner-<name>-work`
+2. Reads that volume’s Docker **Mountpoint**
+3. Bind-mounts `Mountpoint` → `Mountpoint` into the runner
+4. Sets `RUNNER_WORKDIR` to that Mountpoint
 
-## Operator recipe
+## Lifecycle
 
-On the Docker host (not inside the addon):
+- **Create / recreate / scrub:** ensure work volume → resolve Mountpoint → mount + set `RUNNER_WORKDIR`. Registration volume unchanged (no re-registration).
+- **Delete / failed-create rollback:** remove `gha-runner-<name>-work` with the runner.
+- **Upgrade from 0.3.0:** recreate each runner so the container remounts the Mountpoint bind (keep registration volume).
 
-```bash
-sudo mkdir -p /srv/gha-work/supervisor-builder
-sudo chown -R 1000:1000 /srv/gha-work/supervisor-builder
-```
+## Permissions
 
-In the runner UI (Advanced):
-
-- Set **Workdir host path** to `/srv/gha-work/supervisor-builder` (or similar unique path per runner)
-- Keep **Docker socket** mounted
-- **Save & apply** (recreate container)
-
-HAOS: use a host path the Docker engine can see (dedicated disk / known Supervisor path). Named volumes alone are not enough for sibling workspace mounts.
-
-## API
-
-- Create/Patch/Runner: `workdir_host_path` (string; empty clears on patch)
-- When set, named work volume at `/work` is not mounted; `persist_workdir` is ignored for mounts
+Docker volume Mountpoints are typically root-owned. The default `myoung34/github-runner` image runs as root. Non-root runner images need a writable Mountpoint (or an image that runs as root for workspace setup).
 
 ## Related
 

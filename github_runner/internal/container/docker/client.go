@@ -117,6 +117,34 @@ func (c *Client) VolumeExists(ctx context.Context, name string) (bool, error) {
 	return false, err
 }
 
+// VolumeMountpoint returns the host path where Docker stores a named volume's data.
+// Used to same-path bind the workdir so sibling containers can mount $GITHUB_WORKSPACE.
+func (c *Client) VolumeMountpoint(ctx context.Context, name string) (string, error) {
+	if err := validateVolumeName(name); err != nil {
+		return "", err
+	}
+	vol, err := c.cli.VolumeInspect(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	return normalizeVolumeMountpoint(name, vol.Mountpoint)
+}
+
+func validateVolumeName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("empty volume name")
+	}
+	return nil
+}
+
+func normalizeVolumeMountpoint(name, mountpoint string) (string, error) {
+	mp := strings.TrimSpace(mountpoint)
+	if mp == "" {
+		return "", fmt.Errorf("volume %s has empty mountpoint", name)
+	}
+	return mp, nil
+}
+
 // EnvHasKey reports whether inspect env contains KEY= (any value).
 func EnvHasKey(env []string, key string) bool {
 	prefix := key + "="

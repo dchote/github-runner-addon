@@ -40,8 +40,6 @@
         v-model:cache-host-path="cacheHostPath"
         v-model:cache-target="cacheTarget"
         v-model:cache-read-only="cacheReadOnly"
-        v-model:persist-workdir="persistWorkdir"
-        v-model:workdir-host-path="workdirHostPath"
         :disabled="submitting"
       />
       <v-switch
@@ -109,8 +107,6 @@ const cacheVolumeName = ref('')
 const cacheHostPath = ref('')
 const cacheTarget = ref('/cache')
 const cacheReadOnly = ref(false)
-const persistWorkdir = ref(false)
-const workdirHostPath = ref('')
 const apply = ref(false)
 const token = ref('')
 const submitting = ref(false)
@@ -138,8 +134,6 @@ watch(open, (v) => {
   cacheHostPath.value = cache.hostPath
   cacheTarget.value = cache.target
   cacheReadOnly.value = cache.readOnly
-  persistWorkdir.value = !!props.runner.persist_workdir
-  workdirHostPath.value = props.runner.workdir_host_path || ''
   apply.value = false
   token.value = ''
   error.value = ''
@@ -169,8 +163,6 @@ async function submit(forceApply) {
       cacheHostPath: cacheHostPath.value,
       cacheTarget: cacheTarget.value,
       cacheReadOnly: cacheReadOnly.value,
-      persistWorkdir: persistWorkdir.value,
-      workdirHostPath: workdirHostPath.value,
     })
     const payload = {
       labels: runtime.labels,
@@ -180,8 +172,6 @@ async function submit(forceApply) {
       network_mode: runtime.network_mode,
       extra_env: runtime.extra_env,
       cache: runtime.cache,
-      persist_workdir: runtime.persist_workdir,
-      workdir_host_path: runtime.workdir_host_path,
       apply: shouldApply,
     }
     if (runtime.mount_docker_sock === true || runtime.mount_docker_sock === false) {

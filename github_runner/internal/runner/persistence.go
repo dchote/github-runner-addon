@@ -13,11 +13,9 @@ import (
 
 const (
 	defaultCacheTarget = "/cache"
-	workdirPath        = "/work"
-	ephemeralWorkdir   = "/tmp/runner/work"
 
-	StopTimeoutDefault = 30
-	StopTimeoutLong    = 120
+	// StopTimeoutSecs is the container Config.StopTimeout for managed runners.
+	StopTimeoutSecs = 120
 )
 
 var (
@@ -69,29 +67,12 @@ func resolveCacheVolumeName(rec store.Runner) string {
 	return rec.ContainerName + "-cache"
 }
 
-// workdirUsesHostBind reports whether the runner uses a same-path host bind for job workspaces.
-func workdirUsesHostBind(rec store.Runner) bool {
-	return strings.TrimSpace(rec.WorkdirHostPath) != ""
-}
-
-// resolveWorkVolumeName returns the per-runner workdir volume name, or "".
-// Named volumes are not used when WorkdirHostPath is set (sibling Docker needs a host path).
+// resolveWorkVolumeName returns the auto-managed per-runner work volume name.
 func resolveWorkVolumeName(rec store.Runner) string {
-	if workdirUsesHostBind(rec) || !rec.PersistWorkdir {
+	if rec.ContainerName == "" {
 		return ""
 	}
 	return rec.ContainerName + "-work"
-}
-
-// resolveRunnerWorkdir is the path Actions uses for RUNNER_WORKDIR / GITHUB_WORKSPACE parent.
-func resolveRunnerWorkdir(rec store.Runner) string {
-	if p := strings.TrimSpace(rec.WorkdirHostPath); p != "" {
-		return p
-	}
-	if rec.PersistWorkdir {
-		return workdirPath
-	}
-	return ephemeralWorkdir
 }
 
 // cacheVolumeOwned reports whether a failed-create rollback may remove the cache volume
@@ -104,20 +85,6 @@ func cacheVolumeOwned(rec store.Runner) bool {
 		return false
 	}
 	return strings.TrimSpace(rec.Cache.VolumeName) == ""
-}
-
-func usesLongStopTimeout(rec store.Runner) bool {
-	if workdirUsesHostBind(rec) || rec.PersistWorkdir {
-		return true
-	}
-	return rec.Cache != nil && rec.Cache.Enabled
-}
-
-func stopTimeoutSecs(rec store.Runner) int {
-	if usesLongStopTimeout(rec) {
-		return StopTimeoutLong
-	}
-	return StopTimeoutDefault
 }
 
 func normalizeCache(c *store.CacheConfig) *store.CacheConfig {
@@ -138,28 +105,7 @@ func normalizeCache(c *store.CacheConfig) *store.CacheConfig {
 	return &out
 }
 
-func normalizeWorkdirHostPath(p string) string {
-	return strings.TrimSpace(p)
-}
-
-func validateWorkdirHostPath(hostPath string) error {
-	hostPath = normalizeWorkdirHostPath(hostPath)
-	if hostPath == "" {
-		return nil
-	}
-	if err := validateMountPath(hostPath, "workdir_host_path"); err != nil {
-		return err
-	}
-	if hostPath == configFilesDir || hostPath == workdirPath || hostPath == ephemeralWorkdir {
-		return fmt.Errorf("%w: workdir_host_path must not be %s", ErrValidation, hostPath)
-	}
-	if strings.Contains(hostPath, "\x00") {
-		return fmt.Errorf("%w: invalid workdir_host_path", ErrValidation)
-	}
-	return nil
-}
-
-func validateCache(c *store.CacheConfig, persistWorkdir bool, workdirHostPath string) error {
+func validateCache(c *store.CacheConfig) error {
 	if c == nil || !c.Enabled {
 		return nil
 	}
@@ -173,17 +119,6 @@ func validateCache(c *store.CacheConfig, persistWorkdir bool, workdirHostPath st
 	}
 	if target == configFilesDir {
 		return fmt.Errorf("%w: cache.target must not be %s", ErrValidation, configFilesDir)
-	}
-	wd := resolveRunnerWorkdir(store.Runner{
-		PersistWorkdir:  persistWorkdir,
-		WorkdirHostPath: workdirHostPath,
-	})
-	if target == wd {
-		return fmt.Errorf("%w: cache.target must not collide with workdir %s", ErrValidation, wd)
-	}
-	// Legacy volume workdir path still reserved when using named-volume mode.
-	if persistWorkdir && normalizeWorkdirHostPath(workdirHostPath) == "" && target == workdirPath {
-		return fmt.Errorf("%w: cache.target must not collide with workdir %s", ErrValidation, workdirPath)
 	}
 	if typ == "bind" {
 		if err := validateBindHostPath(c.HostPath); err != nil {
@@ -231,7 +166,9 @@ func validateBindHostPath(hostPath string) error {
 	return nil
 }
 
-func buildExtraMounts(rec store.Runner) []mount.Mount {
+// buildExtraMounts builds cache mounts plus the job workdir same-path bind at workdirBind
+// (the Docker volume Mountpoint).
+func buildExtraMounts(rec store.Runner, workdirBind string) []mount.Mount {
 	var mounts []mount.Mount
 	if rec.Cache != nil && rec.Cache.Enabled {
 		target := cacheTarget(rec.Cache)
@@ -251,19 +188,11 @@ func buildExtraMounts(rec store.Runner) []mount.Mount {
 			})
 		}
 	}
-	if hp := normalizeWorkdirHostPath(rec.WorkdirHostPath); hp != "" {
-		// Same path inside and on the Docker host so sibling containers can
-		// `docker run -v $GITHUB_WORKSPACE:...` when the runner mounts docker.sock.
+	if hp := strings.TrimSpace(workdirBind); hp != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
 			Source: hp,
 			Target: hp,
-		})
-	} else if rec.PersistWorkdir {
-		mounts = append(mounts, mount.Mount{
-			Type:   mount.TypeVolume,
-			Source: resolveWorkVolumeName(rec),
-			Target: workdirPath,
 		})
 	}
 	return mounts

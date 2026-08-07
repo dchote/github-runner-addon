@@ -66,8 +66,6 @@ export function buildRuntimePayload({
   cacheHostPath = '',
   cacheTarget = '/cache',
   cacheReadOnly = false,
-  persistWorkdir = false,
-  workdirHostPath = '',
 }) {
   const payload = {}
   const labelList = normalizeLabelList(labels)
@@ -84,8 +82,6 @@ export function buildRuntimePayload({
     payload.mount_docker_sock = null
   }
 
-  payload.persist_workdir = !!persistWorkdir
-  payload.workdir_host_path = String(workdirHostPath || '').trim()
   if (cacheEnabled) {
     const type = cacheType === 'bind' ? 'bind' : 'volume'
     const cache = {

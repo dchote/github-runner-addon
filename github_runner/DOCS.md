@@ -15,7 +15,7 @@ For a fuller product description, install notes, and attribution, see the [repos
 1. Open the app UI (ingress panel).
 2. Click **Create runner**.
 3. Enter a unique **name**, the **GitHub project URL** (repository or organization), and a **registration token** (optional when a PAT is configured).
-4. Optionally set labels, CPU/memory limits, persistent cache / workdir, **workdir host path** (for Docker-in-job workflows), and other runtime fields.
+4. Optionally set labels, CPU/memory limits, persistent cache, and other runtime fields. Job workdir is created automatically.
 5. Monitor status in the table; use **Edit**, **Logs**, **Recreate**, and lifecycle actions as needed.
 
 Registration tokens are passed to the runner container only until registration succeeds (then scrubbed from container env). They are not stored in `runners.json`. The PAT is never written into runner containers.
@@ -24,15 +24,11 @@ Registration tokens are passed to the runner container only until registration s
 
 Runner expected configuration is stored at `/data/runners.json` (Home Assistant’s standard app data directory). That path is always mounted, included in HA backups, and does not require extra `map:` entries.
 
-Registration credentials live in a Docker named volume per runner. Optional **persistent cache** (named volume or host bind at `/cache`) and **persist workdir** (`/work`) are also Docker-managed — large caches are **not** part of HA `/data` backups. Prefer named volumes on HAOS; host binds must be absolute paths on the Docker host. Reuse the same cache volume name (or host path) across runners to share a cache.
+Registration credentials live in a Docker named volume per runner (`*-data`). Each runner also gets an automatic work volume (`*-work`) whose Docker Mountpoint is same-path bind-mounted so sibling `docker run -v $GITHUB_WORKSPACE` works when the Docker socket is mounted — no manual host path. Optional **persistent cache** (named volume or host bind at `/cache`) is separate. Large volumes are **not** part of HA `/data` backups. Prefer named volumes for cache on HAOS; reuse the same cache volume name (or host path) across runners to share a cache.
 
-### Sibling Docker (`docker run -v $GITHUB_WORKSPACE`)
+**Recreate** remounts the automatic workdir Mountpoint and keeps the registration volume (no re-registration). After upgrading from optional `/work` mounts, recreate each runner so the Mountpoint bind applies. Deleting a runner removes its work volume with it.
 
-If jobs mount the workspace into other containers (goreleaser-cross, custom build images), set **Workdir host path** to an absolute path on the Docker host (e.g. `/srv/gha-work/supervisor-builder`). The addon bind-mounts that path at the **same** path inside the runner and sets `RUNNER_WORKDIR` to it. Create the directory on the host first and `chown` it to the runner uid (often `1000`). See [0004 — Sibling Docker workdir](../docs/features/0004-sibling-docker-workdir-host-bind.md).
-
-Named volume workdir (`persist_workdir` → `/work`) and ephemeral `/tmp/runner/work` **do not** work for sibling bind mounts.
-
-For host-path caches, make the directory writable by the runner user (often uid `1000`), e.g. `chown -R 1000:1000 /srv/runner-cache`, or enable **Read-only cache** in Advanced if workflows only need to read. Prune unused Docker volumes / host cache trees periodically — the addon does not enforce disk quotas.
+The default runner image runs as root (volume Mountpoints are writable). For non-root images, or host-path caches, make paths writable by the runner uid (often `1000`), e.g. `chown -R 1000:1000 /srv/runner-cache`, or enable **Read-only cache** in Advanced if workflows only need to read. Prune unused Docker volumes / host cache trees periodically — the addon does not enforce disk quotas.
 
 ## Configuration
 

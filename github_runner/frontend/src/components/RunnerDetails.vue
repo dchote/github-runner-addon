@@ -70,11 +70,16 @@ const cacheLabel = computed(() => {
 })
 
 const workdirLabel = computed(() => {
-  const host = props.runner?.workdir_host_path
-  if (host) return `bind ${host} → ${host} (sibling Docker)`
-  if (!props.runner?.persist_workdir) return 'ephemeral (/tmp/runner/work)'
-  const vol = `${props.runner.container_name}-work`
-  return `volume ${vol} → /work`
+  const resolved = props.runner?.workdir_resolved
+  const err = props.runner?.workdir_error
+  const vol = props.runner?.work_volume_name || `${props.runner?.container_name || ''}-work`
+  if (resolved) {
+    return `${vol} → ${resolved}`
+  }
+  if (err) {
+    return `volume ${vol} (unresolved: ${err})`
+  }
+  return `volume ${vol}`
 })
 
 function formatTime(v) {

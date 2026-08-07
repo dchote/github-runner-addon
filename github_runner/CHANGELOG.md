@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
-
 ## 0.3.1
 
-- **Sibling Docker workdir:** optional `workdir_host_path` same-path host bind so `docker run -v $GITHUB_WORKSPACE` works with `mount_docker_sock` — see [0004](../docs/features/0004-sibling-docker-workdir-host-bind.md)
+- **Automatic sibling-Docker workdir:** each runner gets `gha-runner-<name>-work`; manager same-path binds the volume Mountpoint as `RUNNER_WORKDIR` (no manual host path). Recreate remounts it and keeps registration
+- Container stop grace is **120s** for all managed runners (recreate uses the same)
+- UI/details show work volume and resolved Mountpoint (or an error if Inspect fails)
+- Docs: [0004](../docs/features/0004-sibling-docker-workdir-host-bind.md); upgrade note — recreate existing runners after upgrade
 
 ## 0.3.0
 

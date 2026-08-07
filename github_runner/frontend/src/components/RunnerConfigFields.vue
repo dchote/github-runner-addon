@@ -188,35 +188,13 @@
       </p>
     </template>
 
-    <v-switch
-      :model-value="persistWorkdir"
-      class="mb-0"
-      color="primary"
-      density="comfortable"
-      hide-details
-      label="Persist job workdir (Docker volume)"
-      :disabled="disabled || !!workdirHostPath"
-      @update:model-value="$emit('update:persistWorkdir', $event)"
-    />
-    <p class="text-body-small brand-text-muted mb-3 mt-1">
-      Per-runner volume at /work. Not usable for sibling
-      <code>docker run -v $GITHUB_WORKSPACE</code> — use a host path bind below when the
-      runner mounts the Docker socket.
+    <p class="text-body-small brand-text-muted mb-0">
+      Job workdir is managed automatically: a per-runner Docker volume is created and
+      same-path bind-mounted so sibling
+      <code>docker run -v $GITHUB_WORKSPACE</code>
+      works when the Docker socket is mounted. Recreate keeps registration and this workdir —
+      no manual host path or re-registration required.
     </p>
-    <v-text-field
-      :model-value="workdirHostPath"
-      class="mb-0"
-      label="Workdir host path (sibling Docker)"
-      placeholder="/srv/gha-work/supervisor-builder"
-      hint="Absolute path on the Docker host, bind-mounted at the same path in the runner. Required for goreleaser/buildx jobs that mount the workspace."
-      persistent-hint
-      density="comfortable"
-      variant="outlined"
-      hide-details="auto"
-      autocomplete="off"
-      :disabled="disabled"
-      @update:model-value="$emit('update:workdirHostPath', $event)"
-    />
   </div>
 </template>
 
@@ -246,8 +224,6 @@ defineProps({
   cacheHostPath: { type: String, default: '' },
   cacheTarget: { type: String, default: '/cache' },
   cacheReadOnly: { type: Boolean, default: false },
-  persistWorkdir: { type: Boolean, default: false },
-  workdirHostPath: { type: String, default: '' },
   disabled: { type: Boolean, default: false },
 })
 
@@ -265,7 +241,5 @@ defineEmits([
   'update:cacheHostPath',
   'update:cacheTarget',
   'update:cacheReadOnly',
-  'update:persistWorkdir',
-  'update:workdirHostPath',
 ])
 </script>

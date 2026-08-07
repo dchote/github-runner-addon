@@ -270,15 +270,6 @@ components:
           description: Override global MOUNT_DOCKER_SOCK for this runner
         cache:
           $ref: "#/components/schemas/CacheConfig"
-        persist_workdir:
-          type: boolean
-          description: Persist job workdir on a per-runner named volume at /work (ignored when workdir_host_path is set)
-        workdir_host_path:
-          type: string
-          description: >
-            Absolute Docker-host path bind-mounted at the same path in the runner
-            (RUNNER_WORKDIR). Required for sibling `docker run -v $GITHUB_WORKSPACE`
-            when mount_docker_sock is enabled. Example /srv/gha-work/supervisor-builder.
     PatchRunnerRequest:
       type: object
       properties:
@@ -305,11 +296,6 @@ components:
           description: Clear per-runner docker-sock override (use global default)
         cache:
           $ref: "#/components/schemas/CacheConfig"
-        persist_workdir:
-          type: boolean
-        workdir_host_path:
-          type: string
-          description: Set to an absolute host path for same-path bind; empty string clears
         apply:
           type: boolean
           description: When true, recreate the container to apply runtime changes
@@ -368,11 +354,15 @@ components:
           type: boolean
         cache:
           $ref: "#/components/schemas/CacheConfig"
-        persist_workdir:
-          type: boolean
-        workdir_host_path:
+        work_volume_name:
           type: string
-          description: Same-path host bind for sibling docker -v $GITHUB_WORKSPACE
+          description: Auto-managed work volume (gha-runner-<name>-work)
+        workdir_resolved:
+          type: string
+          description: Docker volume Mountpoint used as RUNNER_WORKDIR
+        workdir_error:
+          type: string
+          description: Present when the work volume Mountpoint could not be resolved
         status:
           $ref: "#/components/schemas/RunnerStatus"
         running:

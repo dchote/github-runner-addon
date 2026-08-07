@@ -25,21 +25,22 @@ After a successful first registration, the manager recreates the container **wit
 
 ### Persistent cache and workdir
 
-Optional per-runner mounts (see [0003-persistent-runner-cache](../features/0003-persistent-runner-cache.md)):
+Per-runner mounts (see [0003-persistent-runner-cache](../features/0003-persistent-runner-cache.md) and [0004](../features/0004-sibling-docker-workdir-host-bind.md)):
 
 | Mount | When | Storage | Target | Notes |
 |-------|------|---------|--------|-------|
-| Cache | `cache.enabled` | Named volume or host bind | default `/cache` | Same `volume_name` / `host_path` across runners shares the cache |
-| Workdir | `persist_workdir` | Named volume `*-work` | `/work` | Sets `RUNNER_WORKDIR=/work`; per-runner only; **not** sibling-Docker safe |
-| Workdir (sibling Docker) | `workdir_host_path` | Host bind (same path) | host path | Sets `RUNNER_WORKDIR` to that path; required for `docker run -v $GITHUB_WORKSPACE` — see [0004](../features/0004-sibling-docker-workdir-host-bind.md) |
+| Cache | optional (`cache.enabled`) | Named volume or host bind | default `/cache` | Same `volume_name` / `host_path` across runners shares the cache |
+| Workdir | **always (automatic)** | Named volume `*-work` | Docker **Mountpoint** (same-path bind) | `RUNNER_WORKDIR` = Mountpoint; sibling-Docker safe |
 
-Prefer **named volumes** on Home Assistant OS. Host binds use **Docker host** paths (not addon `/data` or `/share`). Cache Docker volumes are outside HA `/data` backups.
+Prefer **named volumes** on Home Assistant OS. Cache host binds use **Docker host** paths (not addon `/data` or `/share`). Cache/work Docker volumes are outside HA `/data` backups.
 
-When cache or workdir persistence is enabled, container `StopTimeout` is **120s** (otherwise 30s) so the runner listener can release cleanly. Recreate/scrub use that same grace when stopping the old container. Stop/restart fall back to the container’s configured timeout, or **30s** if unset (older containers).
+Job workdir is created with the runner and removed on delete. Recreate re-reads the volume Mountpoint and remounts it; the registration volume is kept (no re-registration). After upgrading to automatic Mountpoint workdirs, **recreate** each runner so containers pick up the new bind (registration is kept).
 
-**Bind mounts:** ensure the host directory is writable by the runner user (often uid `1000`), e.g. `chown -R 1000:1000 /path/to/cache`, unless the cache is mounted read-only. Sensitive paths (`/`, `/etc`, `/proc`, `/sys`, docker.sock) are rejected as host sources and as container targets.
+Container `StopTimeout` is **120s** for managed runners. Stop/restart use the container’s configured timeout, or **30s** if unset (e.g. older containers).
 
-**Disk hygiene:** unused named volumes and large host cache trees are not pruned automatically — remove them with Docker/`rm` when cold. Applying a config that disables or renames an unreferenced cache/workdir volume deletes that volume after a successful recreate.
+**Permissions:** the default `myoung34/github-runner` image runs as root, so Docker volume Mountpoints and host cache binds are writable. If you override to a non-root image/user, ensure the work Mountpoint and any cache host path are writable by that uid (often `1000`), or mount cache read-only. Sensitive paths (`/`, `/etc`, `/proc`, `/sys`, docker.sock) are rejected as cache host sources and as container targets.
+
+**Disk hygiene:** unused named volumes and large host cache trees are not pruned automatically — remove them with Docker/`rm` when cold. Applying a config that disables or renames an unreferenced cache volume deletes that volume after a successful recreate.
 
 ## Docker socket
 

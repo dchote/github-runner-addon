@@ -24,16 +24,17 @@ It is aimed at home-lab and small-team operators who want persistent self-hosted
 
 - **Manager**: this project’s Go process (API + UI) — the control plane.
 - **Runner container**: a sibling Docker container based on [`myoung34/github-runner`](https://github.com/myoung34/docker-github-actions-runner) (configurable), registered to a GitHub URL with a short-lived registration token (minted via PAT or pasted manually).
-- **Expected config**: records in `/data/runners.json` (name, URL, labels, container/volume names, runtime limits, optional cache/workdir persistence). Registration tokens and PATs are not stored in JSON; registration tokens are passed to the container env only until registration succeeds.
+- **Expected config**: records in `/data/runners.json` (name, URL, labels, container/volume names, runtime limits, optional cache). Registration tokens and PATs are not stored in JSON; registration tokens are passed to the container env only until registration succeeds.
 - **Persistent cache**: optional named volume or host bind (default `/cache`) for incremental CI; share across runners by reusing the same volume name or host path.
+- **Automatic workdir**: per-runner Docker volume exposed via its host Mountpoint so sibling Docker jobs can mount `$GITHUB_WORKSPACE` — no operator path required.
 
 ## Core User Flows
 
-1. **Create runner** — enter name, GitHub project URL, and either a registration token or rely on a configured PAT; optional labels, runtime limits, and persistent cache / workdir.
+1. **Create runner** — enter name, GitHub project URL, and either a registration token or rely on a configured PAT; optional labels, runtime limits, and persistent cache. Workdir is created automatically.
 2. **Monitor** — table of local runners with Docker status; start / stop / restart / recreate / delete; orphan-container warnings when present.
-3. **Edit** — update labels, image, resources, env, docker-sock override, optional persistent cache / workdir; optionally apply by recreating the container.
+3. **Edit** — update labels, image, resources, env, docker-sock override, optional persistent cache; optionally apply by recreating the container (registration + auto workdir kept).
 4. **Logs** — view and follow the runner container’s stdout/stderr.
-5. **Delete** — remove local container, registration volume, and workdir volume; shared cache volumes only when unreferenced. With PAT, also deregister from GitHub when possible.
+5. **Delete** — remove local container, registration volume, and auto work volume; shared cache volumes only when unreferenced. With PAT, also deregister from GitHub when possible.
 
 ## Non-Goals
 
