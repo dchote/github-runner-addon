@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GitHub Runner Manager API
-  version: 0.3.0
+  version: 0.3.1
   description: |
     Control-plane API for Docker-based GitHub Actions self-hosted runners.
 
@@ -272,7 +272,13 @@ components:
           $ref: "#/components/schemas/CacheConfig"
         persist_workdir:
           type: boolean
-          description: Persist job workdir on a per-runner named volume at /work
+          description: Persist job workdir on a per-runner named volume at /work (ignored when workdir_host_path is set)
+        workdir_host_path:
+          type: string
+          description: >
+            Absolute Docker-host path bind-mounted at the same path in the runner
+            (RUNNER_WORKDIR). Required for sibling `docker run -v $GITHUB_WORKSPACE`
+            when mount_docker_sock is enabled. Example /srv/gha-work/supervisor-builder.
     PatchRunnerRequest:
       type: object
       properties:
@@ -301,6 +307,9 @@ components:
           $ref: "#/components/schemas/CacheConfig"
         persist_workdir:
           type: boolean
+        workdir_host_path:
+          type: string
+          description: Set to an absolute host path for same-path bind; empty string clears
         apply:
           type: boolean
           description: When true, recreate the container to apply runtime changes
@@ -361,6 +370,9 @@ components:
           $ref: "#/components/schemas/CacheConfig"
         persist_workdir:
           type: boolean
+        workdir_host_path:
+          type: string
+          description: Same-path host bind for sibling docker -v $GITHUB_WORKSPACE
         status:
           $ref: "#/components/schemas/RunnerStatus"
         running:

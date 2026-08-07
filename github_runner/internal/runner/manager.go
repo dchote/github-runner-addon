@@ -105,6 +105,7 @@ type CreateRequest struct {
 	MountDockerSock *bool              `json:"mount_docker_sock,omitempty"`
 	Cache           *store.CacheConfig `json:"cache,omitempty"`
 	PersistWorkdir  *bool              `json:"persist_workdir,omitempty"`
+	WorkdirHostPath string             `json:"workdir_host_path,omitempty"`
 }
 
 type PatchRequest struct {
@@ -118,8 +119,9 @@ type PatchRequest struct {
 	Image                *string            `json:"image,omitempty"`
 	Cache                *store.CacheConfig `json:"cache,omitempty"`
 	PersistWorkdir       *bool              `json:"persist_workdir,omitempty"`
-	Apply                bool               `json:"apply"`           // if true, recreate container to apply
-	Token                string             `json:"token,omitempty"` // optional when apply=true
+	WorkdirHostPath      *string            `json:"workdir_host_path,omitempty"` // nil=no change; "" clears; path sets same-path bind
+	Apply                bool               `json:"apply"`                     // if true, recreate container to apply
+	Token                string             `json:"token,omitempty"`           // optional when apply=true
 }
 
 type RecreateRequest struct {
@@ -261,8 +263,12 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 		return View{}, err
 	}
 	persistWorkdir := req.PersistWorkdir != nil && *req.PersistWorkdir
+	workdirHostPath := normalizeWorkdirHostPath(req.WorkdirHostPath)
+	if err := validateWorkdirHostPath(workdirHostPath); err != nil {
+		return View{}, err
+	}
 	cache := normalizeCache(req.Cache)
-	if err := validateCache(cache, persistWorkdir); err != nil {
+	if err := validateCache(cache, persistWorkdir, workdirHostPath); err != nil {
 		return View{}, err
 	}
 	id := uuid.NewString()
@@ -296,6 +302,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 		MountDockerSock: req.MountDockerSock,
 		Cache:           cache,
 		PersistWorkdir:  persistWorkdir,
+		WorkdirHostPath: workdirHostPath,
 	}
 	if err := m.Store.Add(rec); err != nil {
 		return View{}, err
@@ -406,10 +413,7 @@ func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, o
 }
 
 func (m *Manager) buildEnv(rec store.Runner, token, orgName string) []string {
-	workdir := ephemeralWorkdir
-	if rec.PersistWorkdir {
-		workdir = workdirPath
-	}
+	workdir := resolveRunnerWorkdir(rec)
 	env := []string{
 		"RUNNER_NAME=" + rec.Name,
 		"LABELS=" + strings.Join(rec.Labels, ","),
@@ -572,7 +576,13 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 	if req.PersistWorkdir != nil {
 		rec.PersistWorkdir = *req.PersistWorkdir
 	}
-	if err := validateCache(rec.Cache, rec.PersistWorkdir); err != nil {
+	if req.WorkdirHostPath != nil {
+		rec.WorkdirHostPath = normalizeWorkdirHostPath(*req.WorkdirHostPath)
+	}
+	if err := validateWorkdirHostPath(rec.WorkdirHostPath); err != nil {
+		return View{}, err
+	}
+	if err := validateCache(rec.Cache, rec.PersistWorkdir, rec.WorkdirHostPath); err != nil {
 		return View{}, err
 	}
 	if err := m.Store.Update(rec); err != nil {

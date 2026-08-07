@@ -30,7 +30,8 @@ Optional per-runner mounts (see [0003-persistent-runner-cache](../features/0003-
 | Mount | When | Storage | Target | Notes |
 |-------|------|---------|--------|-------|
 | Cache | `cache.enabled` | Named volume or host bind | default `/cache` | Same `volume_name` / `host_path` across runners shares the cache |
-| Workdir | `persist_workdir` | Named volume `*-work` | `/work` | Sets `RUNNER_WORKDIR=/work`; per-runner only |
+| Workdir | `persist_workdir` | Named volume `*-work` | `/work` | Sets `RUNNER_WORKDIR=/work`; per-runner only; **not** sibling-Docker safe |
+| Workdir (sibling Docker) | `workdir_host_path` | Host bind (same path) | host path | Sets `RUNNER_WORKDIR` to that path; required for `docker run -v $GITHUB_WORKSPACE` — see [0004](../features/0004-sibling-docker-workdir-host-bind.md) |
 
 Prefer **named volumes** on Home Assistant OS. Host binds use **Docker host** paths (not addon `/data` or `/share`). Cache Docker volumes are outside HA `/data` backups.
 

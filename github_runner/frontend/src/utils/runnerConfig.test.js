@@ -34,6 +34,7 @@ describe('runnerConfig', () => {
     expect(p.extra_env).toEqual({ A: 'b' })
     expect(p.cache).toEqual({ enabled: false })
     expect(p.persist_workdir).toBe(false)
+    expect(p.workdir_host_path).toBe('')
   })
 
   it('builds cache volume payload', () => {
@@ -51,6 +52,7 @@ describe('runnerConfig', () => {
       cacheTarget: '/cache',
       cacheReadOnly: true,
       persistWorkdir: true,
+      workdirHostPath: '/srv/gha-work/builder',
     })
     expect(p.cache).toEqual({
       enabled: true,
@@ -60,6 +62,7 @@ describe('runnerConfig', () => {
       volume_name: 'shared-cache',
     })
     expect(p.persist_workdir).toBe(true)
+    expect(p.workdir_host_path).toBe('/srv/gha-work/builder')
   })
 
   it('builds cache bind payload', () => {

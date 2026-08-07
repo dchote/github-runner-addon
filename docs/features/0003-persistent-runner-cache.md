@@ -14,7 +14,7 @@ Enable long-running / incremental CI on managed runners: a durable cache mount (
 
 - Per-runner **cache** mount: named volume or host bind, default target `/cache`
 - Shared cache by using the same `volume_name` or `host_path` on multiple runners
-- Optional **persist workdir**: per-runner named volume at `/work` (`RUNNER_WORKDIR=/work`)
+- Optional **persist workdir**: per-runner named volume at `/work` (`RUNNER_WORKDIR=/work`) — **not** sufficient for sibling `docker run -v $GITHUB_WORKSPACE` (see [0004](0004-sibling-docker-workdir-host-bind.md))
 - Optional **read-only** cache mount
 - Stop timeout **120s** when cache or workdir persistence is enabled
 - Delete refcount for shared cache volumes; never delete bind host paths

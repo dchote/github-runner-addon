@@ -89,6 +89,7 @@
               v-model:cache-target="cacheTarget"
               v-model:cache-read-only="cacheReadOnly"
               v-model:persist-workdir="persistWorkdir"
+              v-model:workdir-host-path="workdirHostPath"
               :disabled="submitting"
             />
           </v-expansion-panel-text>
@@ -141,6 +142,7 @@ const cacheHostPath = ref('')
 const cacheTarget = ref('/cache')
 const cacheReadOnly = ref(false)
 const persistWorkdir = ref(false)
+const workdirHostPath = ref('')
 const advancedOpen = ref([])
 const submitting = ref(false)
 const error = ref('')
@@ -168,6 +170,7 @@ watch(open, (v) => {
     cacheTarget.value = '/cache'
     cacheReadOnly.value = false
     persistWorkdir.value = false
+    workdirHostPath.value = ''
     advancedOpen.value = []
     error.value = ''
   }
@@ -203,6 +206,7 @@ async function submit() {
       cacheTarget: cacheTarget.value,
       cacheReadOnly: cacheReadOnly.value,
       persistWorkdir: persistWorkdir.value,
+      workdirHostPath: workdirHostPath.value,
     })
     const payload = {
       name: name.value.trim(),
@@ -221,6 +225,7 @@ async function submit() {
     }
     payload.cache = runtime.cache
     payload.persist_workdir = runtime.persist_workdir
+    if (runtime.workdir_host_path) payload.workdir_host_path = runtime.workdir_host_path
     await store.dispatch('createRunner', payload)
     emit('update:modelValue', false)
   } catch (e) {

@@ -70,6 +70,8 @@ const cacheLabel = computed(() => {
 })
 
 const workdirLabel = computed(() => {
+  const host = props.runner?.workdir_host_path
+  if (host) return `bind ${host} → ${host} (sibling Docker)`
   if (!props.runner?.persist_workdir) return 'ephemeral (/tmp/runner/work)'
   const vol = `${props.runner.container_name}-work`
   return `volume ${vol} → /work`

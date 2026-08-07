@@ -41,7 +41,8 @@ type Runner struct {
 	NetworkMode     string            `json:"network_mode,omitempty"`
 	MountDockerSock *bool             `json:"mount_docker_sock,omitempty"` // nil = use global default
 	Cache           *CacheConfig      `json:"cache,omitempty"`
-	PersistWorkdir  bool              `json:"persist_workdir,omitempty"` // named volume at /work
+	PersistWorkdir  bool              `json:"persist_workdir,omitempty"`   // named volume at /work (ignored when WorkdirHostPath is set)
+	WorkdirHostPath string            `json:"workdir_host_path,omitempty"` // same-path host bind for sibling docker -v $GITHUB_WORKSPACE
 }
 
 type fileData struct {

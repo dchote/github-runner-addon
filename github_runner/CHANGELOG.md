@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+## 0.3.1
+
+- **Sibling Docker workdir:** optional `workdir_host_path` same-path host bind so `docker run -v $GITHUB_WORKSPACE` works with `mount_docker_sock` — see [0004](../docs/features/0004-sibling-docker-workdir-host-bind.md)
+
 ## 0.3.0
 
 - Persistent runner cache: named Docker volume or host bind (default `/cache`), optional shared volumes across runners

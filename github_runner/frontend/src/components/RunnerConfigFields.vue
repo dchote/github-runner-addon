@@ -194,13 +194,29 @@
       color="primary"
       density="comfortable"
       hide-details
-      label="Persist job workdir"
-      :disabled="disabled"
+      label="Persist job workdir (Docker volume)"
+      :disabled="disabled || !!workdirHostPath"
       @update:model-value="$emit('update:persistWorkdir', $event)"
     />
-    <p class="text-body-small brand-text-muted mb-0 mt-1">
-      Per-runner volume at /work (survives container recreate). Not shared across runners.
+    <p class="text-body-small brand-text-muted mb-3 mt-1">
+      Per-runner volume at /work. Not usable for sibling
+      <code>docker run -v $GITHUB_WORKSPACE</code> — use a host path bind below when the
+      runner mounts the Docker socket.
     </p>
+    <v-text-field
+      :model-value="workdirHostPath"
+      class="mb-0"
+      label="Workdir host path (sibling Docker)"
+      placeholder="/srv/gha-work/supervisor-builder"
+      hint="Absolute path on the Docker host, bind-mounted at the same path in the runner. Required for goreleaser/buildx jobs that mount the workspace."
+      persistent-hint
+      density="comfortable"
+      variant="outlined"
+      hide-details="auto"
+      autocomplete="off"
+      :disabled="disabled"
+      @update:model-value="$emit('update:workdirHostPath', $event)"
+    />
   </div>
 </template>
 
@@ -231,6 +247,7 @@ defineProps({
   cacheTarget: { type: String, default: '/cache' },
   cacheReadOnly: { type: Boolean, default: false },
   persistWorkdir: { type: Boolean, default: false },
+  workdirHostPath: { type: String, default: '' },
   disabled: { type: Boolean, default: false },
 })
 
@@ -249,5 +266,6 @@ defineEmits([
   'update:cacheTarget',
   'update:cacheReadOnly',
   'update:persistWorkdir',
+  'update:workdirHostPath',
 ])
 </script>
