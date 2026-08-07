@@ -1,5 +1,5 @@
 /**
- * Operator UI theme — go-mumble-server MD3 blue palette + 8wi page-shell spacing.
+ * Operator UI theme — go-mumble-server MD3 blue palette + page-shell spacing.
  */
 
 :root {
@@ -47,7 +47,7 @@ h1, h2, h3, h4, h5, h6,
   font-family: var(--font-family-heading) !important;
 }
 
-/* Page shell — 8wi: 8/24 → 12/32 at ≥960px */
+/* Page shell — 8/24 → 12/32 at ≥960px */
 .v-container.page-content {
   padding-top: 8px !important;
   padding-bottom: 24px !important;
@@ -104,7 +104,7 @@ h1, h2, h3, h4, h5, h6,
   gap: 20px;
 }
 
-/* Cards — mumble flat blue chrome + 8wi header/toolbar insets */
+/* Cards — mumble flat blue chrome + header/toolbar insets */
 .standard-dialog-card,
 .standard-page-card {
   border-radius: 0 !important;
@@ -331,7 +331,7 @@ a.v-btn {
   border-color: rgba(var(--v-theme-on-surface), 0.2) !important;
 }
 
-/* Empty state — centered, large muted icon (8wi recipe) */
+/* Empty state — centered, large muted icon */
 .empty-state {
   text-align: center;
   padding: 48px 16px;

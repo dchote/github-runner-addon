@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GitHub Runner Manager API
-  version: 0.2.1
+  version: 0.3.0
   description: |
     Control-plane API for Docker-based GitHub Actions self-hosted runners.
 
@@ -268,6 +268,11 @@ components:
         mount_docker_sock:
           type: boolean
           description: Override global MOUNT_DOCKER_SOCK for this runner
+        cache:
+          $ref: "#/components/schemas/CacheConfig"
+        persist_workdir:
+          type: boolean
+          description: Persist job workdir on a per-runner named volume at /work
     PatchRunnerRequest:
       type: object
       properties:
@@ -292,6 +297,10 @@ components:
         reset_mount_docker_sock:
           type: boolean
           description: Clear per-runner docker-sock override (use global default)
+        cache:
+          $ref: "#/components/schemas/CacheConfig"
+        persist_workdir:
+          type: boolean
         apply:
           type: boolean
           description: When true, recreate the container to apply runtime changes
@@ -348,9 +357,37 @@ components:
           type: string
         mount_docker_sock:
           type: boolean
+        cache:
+          $ref: "#/components/schemas/CacheConfig"
+        persist_workdir:
+          type: boolean
         status:
           $ref: "#/components/schemas/RunnerStatus"
         running:
+          type: boolean
+    CacheConfig:
+      type: object
+      description: |
+        Optional persistent cache mount. Use the same volume_name (or host_path)
+        on multiple runners to share a cache. Prefer named volumes on HAOS;
+        bind mounts use Docker host paths (not paths inside the addon container).
+      properties:
+        enabled:
+          type: boolean
+        type:
+          type: string
+          enum: [volume, bind]
+          description: Default volume when enabled
+        volume_name:
+          type: string
+          description: Named volume; empty defaults to gha-runner-<name>-cache
+        host_path:
+          type: string
+          description: Absolute Docker host path when type=bind
+        target:
+          type: string
+          description: Container mount path (default /cache)
+        read_only:
           type: boolean
     RunnerEnvelope:
       type: object

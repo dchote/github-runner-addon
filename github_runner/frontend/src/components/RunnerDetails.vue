@@ -4,6 +4,12 @@
     <p class="text-body-medium mb-1"><strong>Scope:</strong> {{ runner.scope }}</p>
     <p class="text-body-medium mb-1"><strong>Container:</strong> {{ runner.container_name }}</p>
     <p class="text-body-medium mb-1"><strong>Volume:</strong> {{ runner.volume_name }}</p>
+    <p class="text-body-medium mb-1">
+      <strong>Cache:</strong> {{ cacheLabel }}
+    </p>
+    <p class="text-body-medium mb-1">
+      <strong>Workdir:</strong> {{ workdirLabel }}
+    </p>
     <p class="text-body-medium mb-1"><strong>Image:</strong> {{ runner.image }}</p>
     <p class="text-body-medium mb-1"><strong>Status:</strong> {{ runner.status }}</p>
     <p class="text-body-medium mb-1">
@@ -49,6 +55,24 @@ const sockLabel = computed(() => {
   if (v === true) return 'mounted (override)'
   if (v === false) return 'not mounted (override)'
   return 'global default'
+})
+
+const cacheLabel = computed(() => {
+  const c = props.runner?.cache
+  if (!c?.enabled) return 'none'
+  const target = c.target || '/cache'
+  const ro = c.read_only ? ' (read-only)' : ''
+  if (c.type === 'bind') {
+    return `bind ${c.host_path || '?'} → ${target}${ro}`
+  }
+  const vol = c.volume_name || `${props.runner.container_name}-cache`
+  return `volume ${vol} → ${target}${ro}`
+})
+
+const workdirLabel = computed(() => {
+  if (!props.runner?.persist_workdir) return 'ephemeral (/tmp/runner/work)'
+  const vol = `${props.runner.container_name}-work`
+  return `volume ${vol} → /work`
 })
 
 function formatTime(v) {

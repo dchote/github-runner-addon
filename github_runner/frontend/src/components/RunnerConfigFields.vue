@@ -93,7 +93,7 @@
     />
     <v-select
       :model-value="mountDockerSock"
-      class="mb-0"
+      class="mb-4"
       label="Mount Docker socket"
       :items="sockItems"
       variant="outlined"
@@ -103,6 +103,104 @@
       :disabled="disabled"
       @update:model-value="$emit('update:mountDockerSock', $event)"
     />
+
+    <v-switch
+      :model-value="cacheEnabled"
+      class="mb-2"
+      color="primary"
+      density="comfortable"
+      hide-details
+      label="Persistent cache"
+      :disabled="disabled"
+      @update:model-value="$emit('update:cacheEnabled', $event)"
+    />
+    <p class="text-body-small brand-text-muted mb-3">
+      Mount a durable cache (default /cache). Prefer a Docker volume on HAOS; use a host path for
+      dedicated disks. Same volume name or host path on multiple runners shares the cache.
+    </p>
+    <template v-if="cacheEnabled">
+      <v-select
+        :model-value="cacheType"
+        class="mb-4"
+        label="Cache storage"
+        :items="cacheTypeItems"
+        variant="outlined"
+        density="comfortable"
+        hide-details="auto"
+        style="max-width: 20rem"
+        :disabled="disabled"
+        @update:model-value="$emit('update:cacheType', $event)"
+      />
+      <v-text-field
+        v-if="cacheType === 'volume'"
+        :model-value="cacheVolumeName"
+        class="mb-4"
+        label="Cache volume name (optional)"
+        hint="Empty uses gha-runner-<name>-cache; reuse the same name to share"
+        persistent-hint
+        variant="outlined"
+        density="comfortable"
+        hide-details="auto"
+        autocomplete="off"
+        :disabled="disabled"
+        @update:model-value="$emit('update:cacheVolumeName', $event)"
+      />
+      <v-text-field
+        v-else
+        :model-value="cacheHostPath"
+        class="mb-4"
+        label="Host path"
+        hint="Absolute path on the Docker host (not paths inside the addon)"
+        persistent-hint
+        variant="outlined"
+        density="comfortable"
+        hide-details="auto"
+        autocomplete="off"
+        :disabled="disabled"
+        @update:model-value="$emit('update:cacheHostPath', $event)"
+      />
+      <v-text-field
+        :model-value="cacheTarget"
+        class="mb-4"
+        label="Cache mount path"
+        hint="Container path (default /cache)"
+        persistent-hint
+        variant="outlined"
+        density="comfortable"
+        hide-details="auto"
+        autocomplete="off"
+        style="max-width: 20rem"
+        :disabled="disabled"
+        @update:model-value="$emit('update:cacheTarget', $event)"
+      />
+      <v-switch
+        :model-value="cacheReadOnly"
+        class="mb-4"
+        color="primary"
+        density="comfortable"
+        hide-details
+        label="Read-only cache"
+        :disabled="disabled"
+        @update:model-value="$emit('update:cacheReadOnly', $event)"
+      />
+      <p class="text-body-small brand-text-muted mb-3">
+        Mount the cache read-only inside the runner (workflows cannot write to it).
+      </p>
+    </template>
+
+    <v-switch
+      :model-value="persistWorkdir"
+      class="mb-0"
+      color="primary"
+      density="comfortable"
+      hide-details
+      label="Persist job workdir"
+      :disabled="disabled"
+      @update:model-value="$emit('update:persistWorkdir', $event)"
+    />
+    <p class="text-body-small brand-text-muted mb-0 mt-1">
+      Per-runner volume at /work (survives container recreate). Not shared across runners.
+    </p>
   </div>
 </template>
 
@@ -113,6 +211,11 @@ const sockItems = [
   { title: 'No', value: false },
 ]
 
+const cacheTypeItems = [
+  { title: 'Docker volume', value: 'volume' },
+  { title: 'Host path (bind)', value: 'bind' },
+]
+
 defineProps({
   labels: { type: Array, default: () => [] },
   image: { type: String, default: '' },
@@ -121,6 +224,13 @@ defineProps({
   networkMode: { type: String, default: '' },
   extraEnvText: { type: String, default: '' },
   mountDockerSock: { type: [Boolean, null], default: null },
+  cacheEnabled: { type: Boolean, default: false },
+  cacheType: { type: String, default: 'volume' },
+  cacheVolumeName: { type: String, default: '' },
+  cacheHostPath: { type: String, default: '' },
+  cacheTarget: { type: String, default: '/cache' },
+  cacheReadOnly: { type: Boolean, default: false },
+  persistWorkdir: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
 })
 
@@ -132,5 +242,12 @@ defineEmits([
   'update:networkMode',
   'update:extraEnvText',
   'update:mountDockerSock',
+  'update:cacheEnabled',
+  'update:cacheType',
+  'update:cacheVolumeName',
+  'update:cacheHostPath',
+  'update:cacheTarget',
+  'update:cacheReadOnly',
+  'update:persistWorkdir',
 ])
 </script>

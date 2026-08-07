@@ -93,29 +93,33 @@ func NewManager(st *store.Store, d *docker.Client, gh *github.Client, image stri
 }
 
 type CreateRequest struct {
-	Name            string            `json:"name"`
-	URL             string            `json:"url"`
-	Token           string            `json:"token"`
-	Labels          []string          `json:"labels"`
-	Image           string            `json:"image,omitempty"`
-	CPULimit        float64           `json:"cpu_limit,omitempty"`
-	MemoryLimitMB   int64             `json:"memory_limit_mb,omitempty"`
-	ExtraEnv        map[string]string `json:"extra_env,omitempty"`
-	NetworkMode     string            `json:"network_mode,omitempty"`
-	MountDockerSock *bool             `json:"mount_docker_sock,omitempty"`
+	Name            string             `json:"name"`
+	URL             string             `json:"url"`
+	Token           string             `json:"token"`
+	Labels          []string           `json:"labels"`
+	Image           string             `json:"image,omitempty"`
+	CPULimit        float64            `json:"cpu_limit,omitempty"`
+	MemoryLimitMB   int64              `json:"memory_limit_mb,omitempty"`
+	ExtraEnv        map[string]string  `json:"extra_env,omitempty"`
+	NetworkMode     string             `json:"network_mode,omitempty"`
+	MountDockerSock *bool              `json:"mount_docker_sock,omitempty"`
+	Cache           *store.CacheConfig `json:"cache,omitempty"`
+	PersistWorkdir  *bool              `json:"persist_workdir,omitempty"`
 }
 
 type PatchRequest struct {
-	Labels               []string          `json:"labels"`
-	CPULimit             *float64          `json:"cpu_limit,omitempty"`
-	MemoryLimitMB        *int64            `json:"memory_limit_mb,omitempty"`
-	ExtraEnv             map[string]string `json:"extra_env,omitempty"`
-	NetworkMode          *string           `json:"network_mode,omitempty"`
-	MountDockerSock      *bool             `json:"mount_docker_sock,omitempty"`
-	ResetMountDockerSock bool              `json:"reset_mount_docker_sock,omitempty"` // clear per-runner override
-	Image                *string           `json:"image,omitempty"`
-	Apply                bool              `json:"apply"`           // if true, recreate container to apply
-	Token                string            `json:"token,omitempty"` // optional when apply=true
+	Labels               []string           `json:"labels"`
+	CPULimit             *float64           `json:"cpu_limit,omitempty"`
+	MemoryLimitMB        *int64             `json:"memory_limit_mb,omitempty"`
+	ExtraEnv             map[string]string  `json:"extra_env,omitempty"`
+	NetworkMode          *string            `json:"network_mode,omitempty"`
+	MountDockerSock      *bool              `json:"mount_docker_sock,omitempty"`
+	ResetMountDockerSock bool               `json:"reset_mount_docker_sock,omitempty"` // clear per-runner override
+	Image                *string            `json:"image,omitempty"`
+	Cache                *store.CacheConfig `json:"cache,omitempty"`
+	PersistWorkdir       *bool              `json:"persist_workdir,omitempty"`
+	Apply                bool               `json:"apply"`           // if true, recreate container to apply
+	Token                string             `json:"token,omitempty"` // optional when apply=true
 }
 
 type RecreateRequest struct {
@@ -256,6 +260,11 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 	if err := validateExtraEnv(req.ExtraEnv); err != nil {
 		return View{}, err
 	}
+	persistWorkdir := req.PersistWorkdir != nil && *req.PersistWorkdir
+	cache := normalizeCache(req.Cache)
+	if err := validateCache(cache, persistWorkdir); err != nil {
+		return View{}, err
+	}
 	id := uuid.NewString()
 	norm := docker.NormalizeName(name)
 	containerName := "gha-runner-" + norm
@@ -285,6 +294,8 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 		ExtraEnv:        req.ExtraEnv,
 		NetworkMode:     strings.TrimSpace(req.NetworkMode),
 		MountDockerSock: req.MountDockerSock,
+		Cache:           cache,
+		PersistWorkdir:  persistWorkdir,
 	}
 	if err := m.Store.Add(rec); err != nil {
 		return View{}, err
@@ -325,8 +336,25 @@ func (m *Manager) rollbackFailedCreate(rec store.Runner, createErr error) (View,
 			"runner", rec.ID, "container", rec.ContainerName, "err", remErr)
 		return View{}, fmt.Errorf("%w (cleanup failed: %v)", createErr, remErr)
 	}
+	m.removeOwnedPersistenceVolumes(dctx, rec)
 	_ = m.Store.Delete(rec.ID)
 	return View{}, createErr
+}
+
+// removeOwnedPersistenceVolumes removes workdir volume and auto-named cache volume.
+func (m *Manager) removeOwnedPersistenceVolumes(ctx context.Context, rec store.Runner) {
+	if work := resolveWorkVolumeName(rec); work != "" {
+		if err := m.Docker.RemoveVolume(ctx, work); err != nil && !docker.IsNotFound(err) {
+			slog.Warn("remove work volume", "volume", work, "err", err)
+		}
+	}
+	if cacheVolumeOwned(rec) {
+		if name := resolveCacheVolumeName(rec); name != "" {
+			if err := m.Docker.RemoveVolume(ctx, name); err != nil && !docker.IsNotFound(err) {
+				slog.Warn("remove cache volume", "volume", name, "err", err)
+			}
+		}
+	}
 }
 
 func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, orgName string, waitRegister bool) error {
@@ -335,6 +363,8 @@ func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, o
 	if rec.MountDockerSock != nil {
 		mountSock = *rec.MountDockerSock
 	}
+	extra := buildExtraMounts(rec)
+	stopSecs := stopTimeoutSecs(rec)
 	_, err := m.Docker.CreateAndStart(ctx, docker.CreateOpts{
 		Name:  rec.ContainerName,
 		Image: rec.Image,
@@ -345,8 +375,10 @@ func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, o
 		},
 		VolumeName:      rec.VolumeName,
 		VolumeTarget:    configFilesDir,
+		ExtraMounts:     extra,
 		MountDockerSock: mountSock,
 		RestartPolicy:   "unless-stopped",
+		StopTimeout:     &stopSecs,
 		CPULimit:        rec.CPULimit,
 		MemoryLimitMB:   rec.MemoryLimitMB,
 		NetworkMode:     rec.NetworkMode,
@@ -374,12 +406,16 @@ func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, o
 }
 
 func (m *Manager) buildEnv(rec store.Runner, token, orgName string) []string {
+	workdir := ephemeralWorkdir
+	if rec.PersistWorkdir {
+		workdir = workdirPath
+	}
 	env := []string{
 		"RUNNER_NAME=" + rec.Name,
 		"LABELS=" + strings.Join(rec.Labels, ","),
 		"RUNNER_SCOPE=" + rec.Scope,
 		"CONFIGURED_ACTIONS_RUNNER_FILES_DIR=" + configFilesDir,
-		"RUNNER_WORKDIR=/tmp/runner/work",
+		"RUNNER_WORKDIR=" + workdir,
 		"DISABLE_AUTO_UPDATE=true",
 		"DISABLE_AUTOMATIC_DEREGISTRATION=true",
 	}
@@ -474,7 +510,7 @@ func summarizeLogs(logs string) string {
 
 // scrubToken recreates the container without RUNNER_TOKEN so docker inspect cannot retain it.
 func (m *Manager) scrubToken(ctx context.Context, rec store.Runner, orgName string) error {
-	if err := m.Docker.RemoveContainer(ctx, rec.ContainerName); err != nil {
+	if err := m.Docker.RemoveContainerTimeout(ctx, rec.ContainerName, stopTimeoutSecs(rec)); err != nil {
 		return err
 	}
 	if err := m.startContainer(ctx, rec, "", orgName, false); err != nil {
@@ -491,10 +527,11 @@ func (m *Manager) scrubToken(ctx context.Context, rec store.Runner, orgName stri
 }
 
 func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View, error) {
-	rec, err := m.Store.Get(id)
+	before, err := m.Store.Get(id)
 	if err != nil {
 		return View{}, err
 	}
+	rec := before
 	if req.Labels != nil {
 		rec.Labels = normalizeLabels(req.Labels)
 	}
@@ -525,13 +562,67 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 		}
 		rec.Image = img
 	}
+	if req.Cache != nil {
+		if !req.Cache.Enabled {
+			rec.Cache = nil
+		} else {
+			rec.Cache = normalizeCache(req.Cache)
+		}
+	}
+	if req.PersistWorkdir != nil {
+		rec.PersistWorkdir = *req.PersistWorkdir
+	}
+	if err := validateCache(rec.Cache, rec.PersistWorkdir); err != nil {
+		return View{}, err
+	}
 	if err := m.Store.Update(rec); err != nil {
 		return View{}, err
 	}
 	if req.Apply {
-		return m.Recreate(ctx, id, RecreateRequest{Token: req.Token})
+		view, recErr := m.Recreate(ctx, id, RecreateRequest{Token: req.Token})
+		if recErr == nil {
+			m.cleanupStalePersistenceVolumes(ctx, before, rec)
+		}
+		return view, recErr
 	}
 	return m.Get(ctx, id)
+}
+
+// cleanupStalePersistenceVolumes removes work/cache volumes that the runner no longer
+// references after a successful apply. Shared cache volumes are removed only when
+// unreferenced by every store runner.
+func (m *Manager) cleanupStalePersistenceVolumes(ctx context.Context, before, after store.Runner) {
+	if m.Docker == nil {
+		return
+	}
+	prevWork := resolveWorkVolumeName(before)
+	nextWork := resolveWorkVolumeName(after)
+	if prevWork != "" && prevWork != nextWork {
+		if err := m.Docker.RemoveVolume(ctx, prevWork); err != nil && !docker.IsNotFound(err) {
+			slog.Warn("cleanup: remove stale work volume", "volume", prevWork, "err", err)
+		}
+	}
+
+	prevCache := resolveCacheVolumeName(before)
+	nextCache := resolveCacheVolumeName(after)
+	if prevCache == "" || prevCache == nextCache {
+		return
+	}
+	runners, err := m.Store.List()
+	if err != nil {
+		slog.Warn("cleanup: list for cache refcount", "err", err)
+		if cacheVolumeOwned(before) {
+			if remErr := m.Docker.RemoveVolume(ctx, prevCache); remErr != nil && !docker.IsNotFound(remErr) {
+				slog.Warn("cleanup: remove owned cache volume", "volume", prevCache, "err", remErr)
+			}
+		}
+		return
+	}
+	if cacheVolumeRefs(runners, prevCache) == 0 {
+		if err := m.Docker.RemoveVolume(ctx, prevCache); err != nil && !docker.IsNotFound(err) {
+			slog.Warn("cleanup: remove stale cache volume", "volume", prevCache, "err", err)
+		}
+	}
 }
 
 func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) (View, error) {
@@ -577,7 +668,9 @@ func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) 
 	}
 
 	if containerInfo.Exists {
-		if err := m.Docker.RemoveContainer(ctx, rec.ContainerName); err != nil && !docker.IsNotFound(err) {
+		// Use the longer grace when persistence is (or stays) enabled so the
+		// listener can release its GitHub session before recreate.
+		if err := m.Docker.RemoveContainerTimeout(ctx, rec.ContainerName, stopTimeoutSecs(rec)); err != nil && !docker.IsNotFound(err) {
 			return View{}, fmt.Errorf("remove container: %w", err)
 		}
 	}
@@ -636,6 +729,28 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err := m.Docker.Remove(ctx, r.ContainerName, r.VolumeName); err != nil {
 		if !docker.IsNotFound(err) {
 			return err
+		}
+	}
+	if work := resolveWorkVolumeName(r); work != "" {
+		if err := m.Docker.RemoveVolume(ctx, work); err != nil && !docker.IsNotFound(err) {
+			slog.Warn("delete: remove work volume", "volume", work, "err", err)
+		}
+	}
+	if cacheVol := resolveCacheVolumeName(r); cacheVol != "" {
+		others, listErr := m.Store.List()
+		removeCache := false
+		if listErr != nil {
+			slog.Warn("delete: list for cache refcount", "err", listErr)
+			// Without a refcount, only remove auto-named (owned) volumes.
+			removeCache = cacheVolumeOwned(r)
+		} else {
+			// This runner is still in the store; refs <= 1 means no other runner shares it.
+			removeCache = cacheVolumeRefs(others, cacheVol) <= 1
+		}
+		if removeCache {
+			if err := m.Docker.RemoveVolume(ctx, cacheVol); err != nil && !docker.IsNotFound(err) {
+				slog.Warn("delete: remove cache volume", "volume", cacheVol, "err", err)
+			}
 		}
 	}
 	return m.Store.Delete(id)

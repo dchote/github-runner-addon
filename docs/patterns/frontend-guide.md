@@ -1,6 +1,6 @@
 # Frontend Guide
 
-Vue 3 + Vuetify 4 (MD3) operator UI for the GitHub Runner Manager control plane. Follow `.cursor/rules/ui-*.md`, `runner-ui-deltas.mdc`, and the 8wi design guide page shell / spacing.
+Vue 3 + Vuetify 4 (MD3) operator UI for the GitHub Runner Manager control plane. Follow `.cursor/rules/ui-*.md` and `runner-ui-deltas.mdc` for page shell and spacing.
 
 Product context and runner-image attribution: [repository README](../../README.md).
 

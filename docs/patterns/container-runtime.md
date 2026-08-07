@@ -23,6 +23,23 @@ Each runner gets a named volume mounted at the path set in `CONFIGURED_ACTIONS_R
 
 After a successful first registration, the manager recreates the container **without** `RUNNER_TOKEN` in env (credentials remain on the volume) so `docker inspect` does not retain the short-lived token.
 
+### Persistent cache and workdir
+
+Optional per-runner mounts (see [0003-persistent-runner-cache](../features/0003-persistent-runner-cache.md)):
+
+| Mount | When | Storage | Target | Notes |
+|-------|------|---------|--------|-------|
+| Cache | `cache.enabled` | Named volume or host bind | default `/cache` | Same `volume_name` / `host_path` across runners shares the cache |
+| Workdir | `persist_workdir` | Named volume `*-work` | `/work` | Sets `RUNNER_WORKDIR=/work`; per-runner only |
+
+Prefer **named volumes** on Home Assistant OS. Host binds use **Docker host** paths (not addon `/data` or `/share`). Cache Docker volumes are outside HA `/data` backups.
+
+When cache or workdir persistence is enabled, container `StopTimeout` is **120s** (otherwise 30s) so the runner listener can release cleanly. Recreate/scrub use that same grace when stopping the old container. Stop/restart fall back to the container’s configured timeout, or **30s** if unset (older containers).
+
+**Bind mounts:** ensure the host directory is writable by the runner user (often uid `1000`), e.g. `chown -R 1000:1000 /path/to/cache`, unless the cache is mounted read-only. Sensitive paths (`/`, `/etc`, `/proc`, `/sys`, docker.sock) are rejected as host sources and as container targets.
+
+**Disk hygiene:** unused named volumes and large host cache trees are not pruned automatically — remove them with Docker/`rm` when cold. Applying a config that disables or renames an unreferenced cache/workdir volume deletes that volume after a successful recreate.
+
 ## Docker socket
 
 `MOUNT_DOCKER_SOCK=true` bind-mounts the host Docker socket into runner containers (needed for many Actions workflows that build images). Default is `false` for safer standalone runs; docker-compose and the HA addon option enable it. Per-runner override is stored on the runner record.

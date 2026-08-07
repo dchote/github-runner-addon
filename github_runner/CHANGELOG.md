@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Persistent runner cache: named Docker volume or host bind (default `/cache`), optional shared volumes across runners
+- Optional persist job workdir (`/work` named volume) and read-only cache mount
+- Longer stop grace (120s) when cache/workdir persistence is enabled; recreate uses the same grace
+- Apply-time cleanup of stale unreferenced work/cache volumes; shared cache delete uses store refcount
+- UI Advanced fields for cache/workdir; details show volume names and read-only state
+- Docs: [0003-persistent-runner-cache](../docs/features/0003-persistent-runner-cache.md), product/tech/runtime/DOCS updates
+- Schema version 3 for `runners.json`
+
 ## 0.2.1
 
 - First tagged GitHub release

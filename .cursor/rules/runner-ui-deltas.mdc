@@ -6,7 +6,7 @@ alwaysApply: true
 
 # Runner addon UI deltas
 
-Canonical UI chrome lives in `.cursor/rules/ui-*.md` and the 8wi design guide. When those conflict with this file, **this file wins**.
+Canonical UI chrome lives in `.cursor/rules/ui-*.md`. When those conflict with this file, **this file wins**.
 
 ## Product exceptions
 

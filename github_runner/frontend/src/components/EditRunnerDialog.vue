@@ -34,6 +34,13 @@
         v-model:network-mode="networkMode"
         v-model:extra-env-text="extraEnvText"
         v-model:mount-docker-sock="mountDockerSock"
+        v-model:cache-enabled="cacheEnabled"
+        v-model:cache-type="cacheType"
+        v-model:cache-volume-name="cacheVolumeName"
+        v-model:cache-host-path="cacheHostPath"
+        v-model:cache-target="cacheTarget"
+        v-model:cache-read-only="cacheReadOnly"
+        v-model:persist-workdir="persistWorkdir"
         :disabled="submitting"
       />
       <v-switch
@@ -76,7 +83,7 @@ import { useStore } from 'vuex'
 import StandardDialog from '@/components/common/StandardDialog.vue'
 import RunnerConfigFields from '@/components/RunnerConfigFields.vue'
 import { useMobile } from '@/composables/useMobile'
-import { buildRuntimePayload, formatExtraEnv } from '@/utils/runnerConfig'
+import { buildRuntimePayload, cacheFromRunner, formatExtraEnv } from '@/utils/runnerConfig'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -95,6 +102,13 @@ const memoryLimitMb = ref(0)
 const networkMode = ref('')
 const extraEnvText = ref('')
 const mountDockerSock = ref(null)
+const cacheEnabled = ref(false)
+const cacheType = ref('volume')
+const cacheVolumeName = ref('')
+const cacheHostPath = ref('')
+const cacheTarget = ref('/cache')
+const cacheReadOnly = ref(false)
+const persistWorkdir = ref(false)
 const apply = ref(false)
 const token = ref('')
 const submitting = ref(false)
@@ -115,6 +129,14 @@ watch(open, (v) => {
     props.runner.mount_docker_sock === true || props.runner.mount_docker_sock === false
       ? props.runner.mount_docker_sock
       : null
+  const cache = cacheFromRunner(props.runner)
+  cacheEnabled.value = cache.enabled
+  cacheType.value = cache.type
+  cacheVolumeName.value = cache.volumeName
+  cacheHostPath.value = cache.hostPath
+  cacheTarget.value = cache.target
+  cacheReadOnly.value = cache.readOnly
+  persistWorkdir.value = !!props.runner.persist_workdir
   apply.value = false
   token.value = ''
   error.value = ''
@@ -138,6 +160,13 @@ async function submit(forceApply) {
       networkMode: networkMode.value,
       extraEnvText: extraEnvText.value,
       mountDockerSock: mountDockerSock.value,
+      cacheEnabled: cacheEnabled.value,
+      cacheType: cacheType.value,
+      cacheVolumeName: cacheVolumeName.value,
+      cacheHostPath: cacheHostPath.value,
+      cacheTarget: cacheTarget.value,
+      cacheReadOnly: cacheReadOnly.value,
+      persistWorkdir: persistWorkdir.value,
     })
     const payload = {
       labels: runtime.labels,
@@ -146,6 +175,8 @@ async function submit(forceApply) {
       memory_limit_mb: runtime.memory_limit_mb,
       network_mode: runtime.network_mode,
       extra_env: runtime.extra_env,
+      cache: runtime.cache,
+      persist_workdir: runtime.persist_workdir,
       apply: shouldApply,
     }
     if (runtime.mount_docker_sock === true || runtime.mount_docker_sock === false) {

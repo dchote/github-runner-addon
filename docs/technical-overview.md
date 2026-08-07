@@ -76,6 +76,8 @@ Default listen: `:8099` (`HTTP_PORT` / `-http-port`). HA ingress uses the same p
 
 Use the standard app data directory `/data` for `runners.json`. It is always available to HA apps, included in backups, and does not need an extra `map:` entry. App options (`log_level`, `mount_docker_sock`, `runner_image`, `github_pat`) are read from `/data/options.json` by the s6 service `rootfs/etc/services.d/github-runner/run` (via `with-contenv`).
 
+Runner **registration** lives in Docker named volumes (`gha-runner-*-data`), not in `/data`. Optional **cache** and **workdir** mounts (schema v3) are also Docker volumes or host binds — large caches will not appear in HA addon backups. Prefer named volumes on HAOS; host binds require absolute paths on the Docker host and must be writable by the runner uid (often `1000`) unless mounted read-only. See [0003-persistent-runner-cache](features/0003-persistent-runner-cache.md).
+
 ## Home Assistant ingress
 
 The SPA injects `<base href>` from `X-Ingress-Path` (and the UI resolves API/WS URLs from that base) so the operator UI works under `/api/hassio_ingress/<token>/`.
@@ -89,7 +91,7 @@ The SPA injects `<base href>` from `X-Ingress-Path` (and the UI resolves API/WS 
 | `RUNNER_IMAGE` | `myoung34/github-runner:latest` | Default [myoung34](https://github.com/myoung34/docker-github-actions-runner) image for new runners (prefer a digest for pinning) |
 | `DATA_DIR` | `./data` or `/data` | Persist `runners.json` (HA apps use `/data`, always mounted and backed up) |
 | `GITHUB_PAT` | _(empty)_ | Optional PAT for minting registration tokens and deregistering runners |
-| `APP_VERSION` | `0.2.1` | Reported in `/api/v1/health` |
+| `APP_VERSION` | `0.3.0` | Reported in `/api/v1/health` |
 
 ## PAT scopes
 

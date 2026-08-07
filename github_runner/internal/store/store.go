@@ -11,7 +11,17 @@ import (
 var ErrNotFound = errors.New("runner not found")
 var ErrConflict = errors.New("runner name already exists")
 
-const SchemaVersion = 2
+const SchemaVersion = 3
+
+// CacheConfig is an optional persistent cache mount for job tooling / build caches.
+type CacheConfig struct {
+	Enabled    bool   `json:"enabled"`
+	Type       string `json:"type,omitempty"`        // volume | bind; default volume when enabled
+	VolumeName string `json:"volume_name,omitempty"` // named volume; empty → gha-runner-<name>-cache
+	HostPath   string `json:"host_path,omitempty"`   // Docker host path when type=bind
+	Target     string `json:"target,omitempty"`      // container path; default /cache
+	ReadOnly   bool   `json:"read_only,omitempty"`
+}
 
 // Runner is the persisted expected configuration (registration token is not stored here).
 type Runner struct {
@@ -30,6 +40,8 @@ type Runner struct {
 	ExtraEnv        map[string]string `json:"extra_env,omitempty"`
 	NetworkMode     string            `json:"network_mode,omitempty"`
 	MountDockerSock *bool             `json:"mount_docker_sock,omitempty"` // nil = use global default
+	Cache           *CacheConfig      `json:"cache,omitempty"`
+	PersistWorkdir  bool              `json:"persist_workdir,omitempty"` // named volume at /work
 }
 
 type fileData struct {

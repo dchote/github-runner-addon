@@ -82,6 +82,13 @@
               v-model:network-mode="networkMode"
               v-model:extra-env-text="extraEnvText"
               v-model:mount-docker-sock="mountDockerSock"
+              v-model:cache-enabled="cacheEnabled"
+              v-model:cache-type="cacheType"
+              v-model:cache-volume-name="cacheVolumeName"
+              v-model:cache-host-path="cacheHostPath"
+              v-model:cache-target="cacheTarget"
+              v-model:cache-read-only="cacheReadOnly"
+              v-model:persist-workdir="persistWorkdir"
               :disabled="submitting"
             />
           </v-expansion-panel-text>
@@ -127,6 +134,13 @@ const memoryLimitMb = ref(0)
 const networkMode = ref('')
 const extraEnvText = ref('')
 const mountDockerSock = ref(null)
+const cacheEnabled = ref(false)
+const cacheType = ref('volume')
+const cacheVolumeName = ref('')
+const cacheHostPath = ref('')
+const cacheTarget = ref('/cache')
+const cacheReadOnly = ref(false)
+const persistWorkdir = ref(false)
 const advancedOpen = ref([])
 const submitting = ref(false)
 const error = ref('')
@@ -147,6 +161,13 @@ watch(open, (v) => {
     networkMode.value = ''
     extraEnvText.value = ''
     mountDockerSock.value = null
+    cacheEnabled.value = false
+    cacheType.value = 'volume'
+    cacheVolumeName.value = ''
+    cacheHostPath.value = ''
+    cacheTarget.value = '/cache'
+    cacheReadOnly.value = false
+    persistWorkdir.value = false
     advancedOpen.value = []
     error.value = ''
   }
@@ -175,6 +196,13 @@ async function submit() {
       networkMode: networkMode.value,
       extraEnvText: extraEnvText.value,
       mountDockerSock: mountDockerSock.value,
+      cacheEnabled: cacheEnabled.value,
+      cacheType: cacheType.value,
+      cacheVolumeName: cacheVolumeName.value,
+      cacheHostPath: cacheHostPath.value,
+      cacheTarget: cacheTarget.value,
+      cacheReadOnly: cacheReadOnly.value,
+      persistWorkdir: persistWorkdir.value,
     })
     const payload = {
       name: name.value.trim(),
@@ -191,6 +219,8 @@ async function submit() {
     if (runtime.mount_docker_sock === true || runtime.mount_docker_sock === false) {
       payload.mount_docker_sock = runtime.mount_docker_sock
     }
+    payload.cache = runtime.cache
+    payload.persist_workdir = runtime.persist_workdir
     await store.dispatch('createRunner', payload)
     emit('update:modelValue', false)
   } catch (e) {

@@ -63,8 +63,10 @@ type CreateOpts struct {
 	Labels          map[string]string
 	VolumeName      string
 	VolumeTarget    string
+	ExtraMounts     []mount.Mount // additional volume/bind mounts (cache, workdir)
 	MountDockerSock bool
 	RestartPolicy   string
+	StopTimeout     *int    // seconds; set on container Config (honored by docker stop)
 	CPULimit        float64 // CPUs; 0 = unlimited
 	MemoryLimitMB   int64   // 0 = unlimited
 	NetworkMode     string
@@ -135,6 +137,13 @@ func (c *Client) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 			return "", fmt.Errorf("volume: %w", err)
 		}
 	}
+	for _, mnt := range opts.ExtraMounts {
+		if mnt.Type == mount.TypeVolume && mnt.Source != "" {
+			if err := c.EnsureVolume(ctx, mnt.Source); err != nil {
+				return "", fmt.Errorf("volume %s: %w", mnt.Source, err)
+			}
+		}
+	}
 
 	mounts := []mount.Mount{}
 	if opts.VolumeName != "" && opts.VolumeTarget != "" {
@@ -144,6 +153,7 @@ func (c *Client) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 			Target: opts.VolumeTarget,
 		})
 	}
+	mounts = append(mounts, opts.ExtraMounts...)
 	if opts.MountDockerSock {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
@@ -171,11 +181,16 @@ func (c *Client) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 		hostCfg.NetworkMode = container.NetworkMode(opts.NetworkMode)
 	}
 
-	resp, err := c.cli.ContainerCreate(ctx, &container.Config{
+	cfg := &container.Config{
 		Image:  opts.Image,
 		Env:    opts.Env,
 		Labels: opts.Labels,
-	}, hostCfg, (*network.NetworkingConfig)(nil), nil, opts.Name)
+	}
+	if opts.StopTimeout != nil {
+		cfg.StopTimeout = opts.StopTimeout
+	}
+
+	resp, err := c.cli.ContainerCreate(ctx, cfg, hostCfg, (*network.NetworkingConfig)(nil), nil, opts.Name)
 	if err != nil {
 		id, adoptErr := c.adoptExisting(opts, err)
 		if adoptErr == nil {
@@ -329,18 +344,44 @@ func (c *Client) Start(ctx context.Context, name string) error {
 	return c.cli.ContainerStart(ctx, name, container.StartOptions{})
 }
 
+const defaultStopTimeoutSecs = 30
+
+// Stop stops the container. Uses Config.StopTimeout when set, otherwise 30s.
 func (c *Client) Stop(ctx context.Context, name string) error {
-	timeout := 30
-	return c.cli.ContainerStop(ctx, name, container.StopOptions{Timeout: &timeout})
+	return c.StopTimeout(ctx, name, c.lookupStopTimeout(ctx, name))
 }
 
+// StopTimeout stops the container with an explicit grace period (seconds).
+// Values <= 0 fall back to Config.StopTimeout or 30s.
+func (c *Client) StopTimeout(ctx context.Context, name string, secs int) error {
+	if secs <= 0 {
+		secs = c.lookupStopTimeout(ctx, name)
+	}
+	return c.cli.ContainerStop(ctx, name, container.StopOptions{Timeout: &secs})
+}
+
+// Restart restarts the container using Config.StopTimeout when set, otherwise 30s.
 func (c *Client) Restart(ctx context.Context, name string) error {
-	timeout := 30
-	return c.cli.ContainerRestart(ctx, name, container.StopOptions{Timeout: &timeout})
+	secs := c.lookupStopTimeout(ctx, name)
+	return c.cli.ContainerRestart(ctx, name, container.StopOptions{Timeout: &secs})
+}
+
+func (c *Client) lookupStopTimeout(ctx context.Context, name string) int {
+	cj, err := c.cli.ContainerInspect(ctx, name)
+	if err == nil && cj.Config != nil && cj.Config.StopTimeout != nil && *cj.Config.StopTimeout > 0 {
+		return *cj.Config.StopTimeout
+	}
+	return defaultStopTimeoutSecs
 }
 
 // RemoveContainer removes the container but leaves the volume intact.
 func (c *Client) RemoveContainer(ctx context.Context, name string) error {
+	return c.RemoveContainerTimeout(ctx, name, 0)
+}
+
+// RemoveContainerTimeout stops (with secs grace when > 0) then removes the container.
+// secs <= 0 uses Config.StopTimeout or the 30s default.
+func (c *Client) RemoveContainerTimeout(ctx context.Context, name string, secs int) error {
 	inspect, err := c.InspectByName(ctx, name)
 	if err != nil {
 		return err
@@ -349,7 +390,7 @@ func (c *Client) RemoveContainer(ctx context.Context, name string) error {
 		return nil
 	}
 	if inspect.Running {
-		_ = c.Stop(ctx, name)
+		_ = c.StopTimeout(ctx, name, secs)
 	}
 	if err := c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}); err != nil {
 		if !client.IsErrNotFound(err) {

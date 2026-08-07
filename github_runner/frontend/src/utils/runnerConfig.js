@@ -29,6 +29,28 @@ export function normalizeLabelList(chips) {
     .filter(Boolean)
 }
 
+export function cacheFromRunner(runner) {
+  const c = runner?.cache
+  if (!c || !c.enabled) {
+    return {
+      enabled: false,
+      type: 'volume',
+      volumeName: '',
+      hostPath: '',
+      target: '/cache',
+      readOnly: false,
+    }
+  }
+  return {
+    enabled: true,
+    type: c.type === 'bind' ? 'bind' : 'volume',
+    volumeName: c.volume_name || '',
+    hostPath: c.host_path || '',
+    target: c.target || '/cache',
+    readOnly: !!c.read_only,
+  }
+}
+
 /** Build create/patch payload fields from shared form state. */
 export function buildRuntimePayload({
   labels,
@@ -38,6 +60,13 @@ export function buildRuntimePayload({
   networkMode,
   extraEnvText,
   mountDockerSock,
+  cacheEnabled = false,
+  cacheType = 'volume',
+  cacheVolumeName = '',
+  cacheHostPath = '',
+  cacheTarget = '/cache',
+  cacheReadOnly = false,
+  persistWorkdir = false,
 }) {
   const payload = {}
   const labelList = normalizeLabelList(labels)
@@ -52,6 +81,26 @@ export function buildRuntimePayload({
     payload.mount_docker_sock = mountDockerSock
   } else {
     payload.mount_docker_sock = null
+  }
+
+  payload.persist_workdir = !!persistWorkdir
+  if (cacheEnabled) {
+    const type = cacheType === 'bind' ? 'bind' : 'volume'
+    const cache = {
+      enabled: true,
+      type,
+      target: String(cacheTarget || '/cache').trim() || '/cache',
+      read_only: !!cacheReadOnly,
+    }
+    if (type === 'bind') {
+      cache.host_path = String(cacheHostPath || '').trim()
+    } else {
+      const vn = String(cacheVolumeName || '').trim()
+      if (vn) cache.volume_name = vn
+    }
+    payload.cache = cache
+  } else {
+    payload.cache = { enabled: false }
   }
   return payload
 }
