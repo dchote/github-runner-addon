@@ -72,7 +72,10 @@ func (c *Client) runVolumeHelper(ctx context.Context, volumeName string, cmd []s
 	if err != nil {
 		return "", -1, err
 	}
-	id := resp.ID
+	return c.waitHelperLogs(ctx, resp.ID)
+}
+
+func (c *Client) waitHelperLogs(ctx context.Context, id string) (string, int, error) {
 	defer func() { _ = c.removeByIDDetached(id) }()
 
 	if err := c.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {

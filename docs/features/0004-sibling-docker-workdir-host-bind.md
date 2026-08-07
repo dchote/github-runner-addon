@@ -42,9 +42,10 @@ API/UI expose:
 
 ## Operator checklist
 
+The manager creates the host workdir with `mkdir -p` (via a one-shot helper) before bind-mounting, so create/recreate does not require a pre-existing path. For non-root runner images, still set ownership:
+
 ```bash
-sudo mkdir -p /srv/gha-work/my-runner
-sudo chown -R 1000:1000 /srv/gha-work/my-runner   # if not running as root
+sudo chown -R 1000:1000 /srv/gha-work/my-runner
 ```
 
 After upgrade from Mountpoint workdirs: **Recreate** (or Save & apply) each runner with PAT/token so `workFolder` moves onto the host bind. Confirm a job’s “Working directory” is under `/srv/gha-work/…` and `ls` on the host shows the checkout during the job.

@@ -49,6 +49,15 @@ func TestValidateVolumeName(t *testing.T) {
 	}
 }
 
+func TestEnsureHostDirRejectsInvalid(t *testing.T) {
+	c := &Client{}
+	for _, p := range []string{"", "/", "relative", "/tmp/../etc", "/tmp/\x00x"} {
+		if err := c.EnsureHostDir(context.Background(), p); err == nil {
+			t.Fatalf("expected reject for %q", p)
+		}
+	}
+}
+
 func TestNormalizeVolumeMountpoint(t *testing.T) {
 	mp, err := normalizeVolumeMountpoint("vol", " /var/lib/docker/volumes/vol/_data ")
 	if err != nil || mp != "/var/lib/docker/volumes/vol/_data" {

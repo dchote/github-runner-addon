@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- Create missing workdir (and cache bind) host directories before bind-mount so runner create no longer fails when `/srv/gha-work/<name>` does not exist yet
+
 ## 0.4.0
 
 - **Fix sibling-Docker workdir:** use a real host directory same-path bind (default `/srv/gha-work/<name>`, optional `workdir_host_path`) instead of Docker volume Mountpoints

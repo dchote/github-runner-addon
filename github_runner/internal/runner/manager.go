@@ -461,6 +461,16 @@ func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, o
 	if err := validateWorkdirHostPath(workdirBind); err != nil {
 		return err
 	}
+	if err := m.Docker.EnsureHostDir(ctx, workdirBind); err != nil {
+		return fmt.Errorf("ensure workdir host path: %w", err)
+	}
+	if rec.Cache != nil && rec.Cache.Enabled && cacheType(rec.Cache) == "bind" {
+		if hp := strings.TrimSpace(rec.Cache.HostPath); hp != "" {
+			if err := m.Docker.EnsureHostDir(ctx, hp); err != nil {
+				return fmt.Errorf("ensure cache host path: %w", err)
+			}
+		}
+	}
 	env := m.buildEnv(rec, token, orgName, workdirBind)
 	mountSock := m.MountDockerSock
 	if rec.MountDockerSock != nil {
