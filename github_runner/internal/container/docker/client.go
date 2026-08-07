@@ -2,8 +2,10 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -20,6 +22,11 @@ import (
 const (
 	LabelManaged = "com.github-runner-addon.managed"
 	LabelID      = "com.github-runner-addon.id"
+
+	// opTimeout is used for follow-up Docker calls when the caller's context is
+	// already canceled (client disconnect / request timeout) but the daemon may
+	// have completed the work.
+	opTimeout = 45 * time.Second
 )
 
 // Client wraps the Docker Engine API.
@@ -170,13 +177,83 @@ func (c *Client) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 		Labels: opts.Labels,
 	}, hostCfg, (*network.NetworkingConfig)(nil), nil, opts.Name)
 	if err != nil {
+		id, adoptErr := c.adoptExisting(opts, err)
+		if adoptErr == nil {
+			return id, nil
+		}
 		return "", err
 	}
-	if err := c.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		_ = c.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+	if err := c.startByID(ctx, resp.ID); err != nil {
+		// Context may have been canceled after create succeeded; finish start
+		// with a detached deadline before giving up and removing.
+		if IsContextError(err) {
+			if startErr := c.startByIDDetached(resp.ID); startErr == nil {
+				slog.Warn("container start recovered after context cancel", "name", opts.Name, "id", resp.ID)
+				return resp.ID, nil
+			}
+		}
+		_ = c.removeByIDDetached(resp.ID)
 		return "", err
 	}
 	return resp.ID, nil
+}
+
+// adoptExisting recovers when ContainerCreate fails with a name conflict or a
+// canceled/deadline context: the daemon may already have created the container.
+func (c *Client) adoptExisting(opts CreateOpts, createErr error) (string, error) {
+	if !IsConflict(createErr) && !IsContextError(createErr) {
+		return "", createErr
+	}
+	dctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+
+	info, err := c.InspectByName(dctx, opts.Name)
+	if err != nil {
+		return "", err
+	}
+	if !info.Exists {
+		return "", createErr
+	}
+	if !labelsMatch(info.Labels, opts.Labels) {
+		return "", createErr
+	}
+	if !info.Running {
+		if err := c.cli.ContainerStart(dctx, info.ID, container.StartOptions{}); err != nil {
+			return "", fmt.Errorf("start adopted container: %w", err)
+		}
+	}
+	slog.Warn("adopted existing container after create race",
+		"name", opts.Name,
+		"id", info.ID,
+		"create_err", createErr,
+	)
+	return info.ID, nil
+}
+
+func labelsMatch(have, want map[string]string) bool {
+	if want == nil {
+		return have[LabelManaged] == "true"
+	}
+	if id := want[LabelID]; id != "" {
+		return have[LabelManaged] == "true" && have[LabelID] == id
+	}
+	return have[LabelManaged] == "true"
+}
+
+func (c *Client) startByID(ctx context.Context, id string) error {
+	return c.cli.ContainerStart(ctx, id, container.StartOptions{})
+}
+
+func (c *Client) startByIDDetached(id string) error {
+	dctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	return c.cli.ContainerStart(dctx, id, container.StartOptions{})
+}
+
+func (c *Client) removeByIDDetached(id string) error {
+	dctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	return c.cli.ContainerRemove(dctx, id, container.RemoveOptions{Force: true})
 }
 
 type InspectInfo struct {
@@ -186,6 +263,7 @@ type InspectInfo struct {
 	Running bool
 	Exists  bool
 	Env     []string
+	Labels  map[string]string
 }
 
 func (c *Client) InspectByName(ctx context.Context, name string) (InspectInfo, error) {
@@ -203,6 +281,12 @@ func (c *Client) InspectByName(ctx context.Context, name string) (InspectInfo, e
 	info.Running = cj.State.Running
 	if cj.Config != nil {
 		info.Env = append([]string{}, cj.Config.Env...)
+		if len(cj.Config.Labels) > 0 {
+			info.Labels = make(map[string]string, len(cj.Config.Labels))
+			for k, v := range cj.Config.Labels {
+				info.Labels[k] = v
+			}
+		}
 	}
 	return info, nil
 }
@@ -299,6 +383,26 @@ func IsConflict(err error) bool {
 	return strings.Contains(msg, "already in use") ||
 		strings.Contains(msg, "conflict") ||
 		strings.Contains(msg, "is already taken")
+}
+
+// IsContextError reports whether err is (or wraps) a canceled/deadline context.
+func IsContextError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// Some HTTP/Docker transport errors only embed the message.
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "context deadline exceeded")
+}
+
+// DetachedContext returns a background context with opTimeout for cleanup when
+// the caller's context may already be canceled.
+func DetachedContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), opTimeout)
 }
 
 // Logs returns a demultiplexed stdout+stderr stream (no Docker mux headers).

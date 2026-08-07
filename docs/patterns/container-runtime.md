@@ -36,3 +36,7 @@ Optional per-runner `cpu_limit` (cores → NanoCPUs) and `memory_limit_mb` are a
 ## Reconcile
 
 On startup and every ~2 minutes the manager lists Docker containers with the managed label and records orphans (containers without a matching store row). Orphans are surfaced in `/api/v1/health` and the UI, and are not deleted automatically.
+
+## Create resilience
+
+`ContainerCreate` can succeed on the daemon after the client context is canceled (request timeout or disconnect). `CreateAndStart` recovers by inspecting the named container with a detached timeout, adopting it when managed labels match, and starting it if needed. Failed create cleanup in the manager also uses a detached Docker context so rollback is not a no-op under cancel; if a matching managed container already exists, the store row is kept instead of becoming an orphan.

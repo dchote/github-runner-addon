@@ -291,11 +291,42 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 	}
 
 	if err := m.startContainer(ctx, rec, token, info.OrgName(), true); err != nil {
-		_ = m.Docker.Remove(ctx, containerName, volumeName)
-		_ = m.Store.Delete(id)
-		return View{}, err
+		return m.rollbackFailedCreate(rec, err)
 	}
 	return m.Get(ctx, id)
+}
+
+// rollbackFailedCreate cleans up after a failed create. Uses a detached Docker
+// context so request cancel/timeout cannot leave an orphaned container. If the
+// container is already present with our managed labels (create raced and
+// succeeded), keep the store row and treat the runner as created.
+func (m *Manager) rollbackFailedCreate(rec store.Runner, createErr error) (View, error) {
+	dctx, cancel := docker.DetachedContext()
+	defer cancel()
+
+	info, inspErr := m.Docker.InspectByName(dctx, rec.ContainerName)
+	if inspErr == nil && info.Exists && info.Labels[docker.LabelID] == rec.ID {
+		if !info.Running {
+			if startErr := m.Docker.Start(dctx, rec.ContainerName); startErr != nil {
+				slog.Warn("create rollback: container exists but start failed",
+					"runner", rec.ID, "container", rec.ContainerName, "err", startErr)
+			} else {
+				info.Running = true
+				info.Status = "running"
+			}
+		}
+		slog.Warn("create reported failure but managed container exists; keeping runner",
+			"runner", rec.ID, "container", rec.ContainerName, "status", info.Status, "err", createErr)
+		return m.enrich(dctx, rec), nil
+	}
+
+	if remErr := m.Docker.Remove(dctx, rec.ContainerName, rec.VolumeName); remErr != nil {
+		slog.Error("create rollback: remove failed; leaving store row for operator cleanup",
+			"runner", rec.ID, "container", rec.ContainerName, "err", remErr)
+		return View{}, fmt.Errorf("%w (cleanup failed: %v)", createErr, remErr)
+	}
+	_ = m.Store.Delete(rec.ID)
+	return View{}, createErr
 }
 
 func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, orgName string, waitRegister bool) error {
@@ -379,6 +410,16 @@ func (m *Manager) waitForRegistration(ctx context.Context, containerName string)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
+			// Request canceled/timed out after the container started: do not fail
+			// hard if the runner is still up — treat like a soft timeout.
+			dctx, cancel := docker.DetachedContext()
+			info, err := m.Docker.InspectByName(dctx, containerName)
+			cancel()
+			if err == nil && info.Exists && info.Running {
+				slog.Warn("registration wait interrupted; container still running",
+					"container", containerName, "err", ctx.Err())
+				return false, nil
+			}
 			return false, ctx.Err()
 		default:
 		}
