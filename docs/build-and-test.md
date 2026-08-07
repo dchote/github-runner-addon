@@ -59,7 +59,17 @@ docker compose up --build
 | Pull from GHCR (default) | Keep `image: ghcr.io/dchote/github-runner-addon` in `github_runner/config.yaml` |
 | Build on HA host | Comment out `image:`, then **Rebuild** in the Supervisor UI |
 
-CI (`.github/workflows/builder.yaml`) publishes multi-arch images to GHCR using the official Home Assistant BuildKit actions.
+CI (`.github/workflows/builder.yaml`) publishes multi-arch images to GHCR using the official Home Assistant BuildKit actions. Image tags follow `version:` in `github_runner/config.yaml`.
+
+### Bump version (before tag / release)
+
+```bash
+./scripts/bump-version.sh          # patch
+./scripts/bump-version.sh minor
+./scripts/bump-version.sh 0.4.0    # exact
+```
+
+Keeps `config.yaml`, `DefaultVersion`, OpenAPI `info.version`, Dockerfile `BUILD_VERSION`, and `CHANGELOG.md` in sync. Fill in the changelog, then commit / tag / release.
 
 ## Deprecated
 

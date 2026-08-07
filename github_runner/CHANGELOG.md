@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3
+
+- Add `./scripts/bump-version.sh` and a Cursor release rule so tag/release bumps keep `config.yaml`, `DefaultVersion`, OpenAPI, Dockerfile `BUILD_VERSION`, and CHANGELOG in sync
+- Docs: version bump workflow in build-and-test; stop pinning `APP_VERSION` examples to a literal release
+
 ## 0.3.2
 
 - Fix reported `version=` in logs/health: bake `BUILD_VERSION` into image `APP_VERSION` and stop the s6 run script from forcing a stale `0.2.0` fallback

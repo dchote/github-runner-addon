@@ -1,0 +1,37 @@
+---
+description: Auto-bump version when tagging/releasing the addon
+alwaysApply: true
+---
+
+# Release versioning
+
+When the user asks to **tag**, **release**, or **commit + tag + push + release**:
+
+1. **Bump first** unless `github_runner/config.yaml` `version:` is already ahead of the latest git tag (`git tag -l --sort=-v:refname | head -1`).
+2. Run `./scripts/bump-version.sh` with the right level:
+   - `patch` (default) — fixes, small follow-ups
+   - `minor` — user-facing features
+   - `major` — breaking changes
+   - Or an exact `X.Y.Z` if the user names one
+3. Fill in `github_runner/CHANGELOG.md` for the new version (replace the stub if the script added one). Do **not** leave `_(add release notes)_`.
+4. Commit version + feature/fix changes together (or version bump alone if that is the only change).
+5. Annotated tag matching `config.yaml` version exactly (e.g. `0.3.3`), push `HEAD` + tag, `gh release create` with notes from the changelog.
+6. Confirm CI **Builder** publishes `ghcr.io/dchote/github-runner-addon:<version>` before telling the user the release is ready to install.
+
+## Version sources (must match)
+
+| File | Field |
+|------|--------|
+| `github_runner/config.yaml` | `version:` (source of truth for HA / CI) |
+| `github_runner/internal/runtime/runtime.go` | `DefaultVersion` |
+| `github_runner/api/openapi.yaml` | `info.version` |
+| `github_runner/Dockerfile` | `ARG BUILD_VERSION` default |
+| `github_runner/CHANGELOG.md` | `## X.Y.Z` section |
+
+Prefer `./scripts/bump-version.sh` over hand-editing. Do **not** hardcode a stale `APP_VERSION` fallback in `rootfs/etc/services.d/github-runner/run` — image `ENV APP_VERSION` comes from `BUILD_VERSION`.
+
+## Do not
+
+- Retag / reuse a version already on the remote
+- Ship a tag whose `version:` disagrees with `DefaultVersion` / OpenAPI / Dockerfile default
+- Skip the changelog section for the tagged version

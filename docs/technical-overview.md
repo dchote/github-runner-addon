@@ -91,7 +91,7 @@ The SPA injects `<base href>` from `X-Ingress-Path` (and the UI resolves API/WS 
 | `RUNNER_IMAGE` | `myoung34/github-runner:latest` | Default [myoung34](https://github.com/myoung34/docker-github-actions-runner) image for new runners (prefer a digest for pinning) |
 | `DATA_DIR` | `./data` or `/data` | Persist `runners.json` (HA apps use `/data`, always mounted and backed up) |
 | `GITHUB_PAT` | _(empty)_ | Optional PAT for minting registration tokens and deregistering runners |
-| `APP_VERSION` | image `BUILD_VERSION` / `0.3.2` | Reported in logs and `/api/v1/health` |
+| `APP_VERSION` | image `BUILD_VERSION` / `DefaultVersion` | Reported in logs and `/api/v1/health` (keep in sync via `./scripts/bump-version.sh`) |
 
 ## PAT scopes
 
