@@ -6,7 +6,8 @@ set -euo pipefail
 
 OPTIONS_FILE="${OPTIONS_FILE:-/data/options.json}"
 export DATA_DIR="${DATA_DIR:-/data}"
-export APP_VERSION="${APP_VERSION:-0.2.0}"
+# APP_VERSION is baked into the image from BUILD_VERSION (see Dockerfile).
+# Leave unset so the binary DefaultVersion applies for local/dev runs.
 
 if [[ -f "${OPTIONS_FILE}" ]]; then
   export LOG_LEVEL

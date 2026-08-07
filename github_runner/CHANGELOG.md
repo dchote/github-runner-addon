@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- Fix reported `version=` in logs/health: bake `BUILD_VERSION` into image `APP_VERSION` and stop the s6 run script from forcing a stale `0.2.0` fallback
+
 ## 0.3.1
 
 - **Automatic sibling-Docker workdir:** each runner gets `gha-runner-<name>-work`; manager same-path binds the volume Mountpoint as `RUNNER_WORKDIR` (no manual host path). Recreate remounts it and keeps registration
