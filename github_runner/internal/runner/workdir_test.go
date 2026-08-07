@@ -50,6 +50,12 @@ func TestParseRunnerWorkFolder(t *testing.T) {
 	if err != nil || wf != "/tmp/runner/work" {
 		t.Fatalf("wf=%q err=%v", wf, err)
 	}
+	// UTF-8 BOM (seen when demux/corruption or Windows-style writes prefix the file).
+	bom := append([]byte{0xEF, 0xBB, 0xBF}, []byte(`{"workFolder":"/srv/gha-work/lab"}`)...)
+	wf, err = parseRunnerWorkFolder(bom)
+	if err != nil || wf != "/srv/gha-work/lab" {
+		t.Fatalf("BOM: wf=%q err=%v", wf, err)
+	}
 }
 
 func TestNormalizeWorkdirHostPath(t *testing.T) {

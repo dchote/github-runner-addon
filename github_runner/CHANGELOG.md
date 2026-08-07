@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3
+
+- Fix `.runner` workFolder reads: use `CopyFromContainer` instead of `cat` via container logs (avoids multiplex/BOM corruption that blocked create verify and hung the UI), and strip UTF-8 BOM before JSON parse
+
 ## 0.4.2
 
 - Harden sibling-Docker workdir pipeline: stop container before clearing `.runner`; assert agent `workFolder` after start; narrow host `mkdir` bind roots; typed `ErrVolumeFileNotFound`; workdirHost test seam + pipeline unit tests; remove unused VolumeMountpoint; UI default path uses normalized runner name

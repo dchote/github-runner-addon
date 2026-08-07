@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GitHub Runner Manager API
-  version: 0.4.2
+  version: 0.4.3
   description: |
     Control-plane API for Docker-based GitHub Actions self-hosted runners.
 

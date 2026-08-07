@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,6 +92,7 @@ type runnerDotConfig struct {
 }
 
 func parseRunnerWorkFolder(raw []byte) (string, error) {
+	raw = bytes.TrimPrefix(bytes.TrimSpace(raw), []byte{0xEF, 0xBB, 0xBF})
 	var cfg runnerDotConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return "", err
