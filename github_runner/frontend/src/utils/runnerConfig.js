@@ -1,3 +1,16 @@
+/** Match github_runner/internal/container/docker.NormalizeName for default workdir paths. */
+export function normalizeRunnerName(name) {
+  let n = String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
+  return n || 'runner'
+}
+
+export function defaultWorkdirHostPath(runnerName) {
+  return `/srv/gha-work/${normalizeRunnerName(runnerName)}`
+}
+
 /** Parse KEY=value lines into an object; empty → {}. */
 export function parseExtraEnvText(text) {
   const out = {}

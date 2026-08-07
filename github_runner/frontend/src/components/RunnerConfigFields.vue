@@ -212,6 +212,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { defaultWorkdirHostPath } from '@/utils/runnerConfig'
 
 const sockItems = [
   { title: 'Use global default', value: null },
@@ -244,8 +245,9 @@ const props = defineProps({
 })
 
 const workdirHint = computed(() => {
-  const n = String(props.runnerName || '').trim() || '<name>'
-  return `Empty uses /srv/gha-work/${n} on the Docker host`
+  const n = String(props.runnerName || '').trim()
+  const example = n ? defaultWorkdirHostPath(n) : '/srv/gha-work/<normalized-name>'
+  return `Empty uses ${example} on the Docker host`
 })
 
 defineEmits([

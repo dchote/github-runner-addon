@@ -26,7 +26,7 @@ It is aimed at home-lab and small-team operators who want persistent self-hosted
 - **Runner container**: a sibling Docker container based on [`myoung34/github-runner`](https://github.com/myoung34/docker-github-actions-runner) (configurable), registered to a GitHub URL with a short-lived registration token (minted via PAT or pasted manually).
 - **Expected config**: records in `/data/runners.json` (name, URL, labels, container/volume names, runtime limits, optional cache, optional workdir host path). Registration tokens and PATs are not stored in JSON; registration tokens are passed to the container env only until registration succeeds.
 - **Persistent cache**: optional named volume or host bind (default `/cache`) for incremental CI; share across runners by reusing the same volume name or host path.
-- **Sibling-Docker workdir**: host directory same-path bind (default `/srv/gha-work/<name>`) so jobs can `docker run -v $GITHUB_WORKSPACE`; agent `workFolder` must match (reconfigure when it drifts).
+- **Sibling-Docker workdir**: host directory same-path bind (default `/srv/gha-work/<normalized-name>`) so jobs can `docker run -v $GITHUB_WORKSPACE`; agent `workFolder` must match (reconfigure when it drifts).
 
 ## Core User Flows
 

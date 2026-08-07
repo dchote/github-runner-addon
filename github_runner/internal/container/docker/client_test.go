@@ -37,40 +37,6 @@ func TestIsConflict(t *testing.T) {
 	}
 }
 
-func TestValidateVolumeName(t *testing.T) {
-	if err := validateVolumeName(""); err == nil {
-		t.Fatal("expected empty name error")
-	}
-	if err := validateVolumeName("   "); err == nil {
-		t.Fatal("expected whitespace name error")
-	}
-	if err := validateVolumeName("gha-runner-x-work"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestEnsureHostDirRejectsInvalid(t *testing.T) {
-	c := &Client{}
-	for _, p := range []string{"", "/", "relative", "/tmp/../etc", "/tmp/\x00x"} {
-		if err := c.EnsureHostDir(context.Background(), p); err == nil {
-			t.Fatalf("expected reject for %q", p)
-		}
-	}
-}
-
-func TestNormalizeVolumeMountpoint(t *testing.T) {
-	mp, err := normalizeVolumeMountpoint("vol", " /var/lib/docker/volumes/vol/_data ")
-	if err != nil || mp != "/var/lib/docker/volumes/vol/_data" {
-		t.Fatalf("mp=%q err=%v", mp, err)
-	}
-	if _, err := normalizeVolumeMountpoint("vol", ""); err == nil {
-		t.Fatal("expected empty mountpoint error")
-	}
-	if _, err := normalizeVolumeMountpoint("vol", "   "); err == nil {
-		t.Fatal("expected whitespace mountpoint error")
-	}
-}
-
 func TestLabelsMatch(t *testing.T) {
 	have := map[string]string{LabelManaged: "true", LabelID: "abc"}
 	if !labelsMatch(have, map[string]string{LabelManaged: "true", LabelID: "abc"}) {

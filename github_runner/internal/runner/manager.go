@@ -2,10 +2,10 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"path"
 	"strings"
 	"sync"
 	"time"
@@ -70,15 +70,17 @@ type Manager struct {
 	orphansMu     sync.RWMutex
 	orphans       []OrphanView
 
-	// agentWorkFolder caches .runner workFolder per data volume (invalidated on reconfigure/delete).
+	// workdirHost overrides Docker for EnsureHostDir / volume file ops (tests).
+	workdirHost workdirHost
+
+	// agentWorkFolder caches successful .runner reads (and missing-file) per data volume.
 	agentWFMu sync.RWMutex
 	agentWF   map[string]agentWorkFolderCache
 }
 
 type agentWorkFolderCache struct {
-	folder string
-	err    string // non-empty when last read failed (other than missing file)
-	ok     bool   // true if folder was read successfully (may be empty)
+	folder  string
+	missing bool // true when .runner was confirmed absent
 }
 
 type OrphanView struct {
@@ -160,13 +162,13 @@ func (m *Manager) enrich(ctx context.Context, r store.Runner) View {
 	if r.VolumeName != "" {
 		wf, err := m.readAgentWorkFolder(ctx, r.VolumeName)
 		if err != nil {
-			if err.Error() != "no .runner" {
+			if !errors.Is(err, errNoRunnerConfig) {
 				v.WorkdirError = err.Error()
 				slog.Warn("read .runner workFolder failed", "volume", r.VolumeName, "err", err)
 			}
 		} else if wf != "" {
 			v.WorkdirAgent = wf
-			v.WorkdirMismatch = path.Clean(wf) != path.Clean(v.WorkdirEffective)
+			v.WorkdirMismatch = !workdirPathsMatch(wf, v.WorkdirEffective)
 		}
 	}
 	info, err := m.Docker.InspectByName(ctx, r.ContainerName)
@@ -182,44 +184,49 @@ func (m *Manager) readAgentWorkFolder(ctx context.Context, volumeName string) (s
 	m.agentWFMu.RLock()
 	if c, hit := m.agentWF[volumeName]; hit {
 		m.agentWFMu.RUnlock()
-		if c.err != "" {
-			return "", fmt.Errorf("%s", c.err)
+		if c.missing {
+			return "", errNoRunnerConfig
 		}
-		if c.ok {
-			if c.folder == "" {
-				return "", fmt.Errorf("no .runner")
-			}
-			return c.folder, nil
-		}
-	} else {
-		m.agentWFMu.RUnlock()
+		return c.folder, nil
 	}
+	m.agentWFMu.RUnlock()
 
-	raw, err := m.Docker.ReadVolumeFile(ctx, volumeName, runnerConfigFile)
+	wh := m.workdirHostOrDocker()
+	if wh == nil {
+		return "", fmt.Errorf("docker unavailable")
+	}
+	raw, err := wh.ReadVolumeFile(ctx, volumeName, runnerConfigFile)
 	if err != nil {
-		// Treat missing .runner as empty (not an enrich error).
-		if strings.Contains(err.Error(), "exit 1") {
-			m.cacheAgentWorkFolder(volumeName, "", "", true)
-			return "", fmt.Errorf("no .runner")
+		if errors.Is(err, docker.ErrVolumeFileNotFound) {
+			m.cacheAgentWorkFolderMissing(volumeName)
+			return "", errNoRunnerConfig
 		}
-		m.cacheAgentWorkFolder(volumeName, "", err.Error(), false)
+		// Do not cache hard errors — retry on next enrich/recreate.
 		return "", err
 	}
 	wf, err := parseRunnerWorkFolder(raw)
 	if err != nil {
-		m.cacheAgentWorkFolder(volumeName, "", err.Error(), false)
 		return "", err
 	}
-	m.cacheAgentWorkFolder(volumeName, wf, "", true)
+	m.cacheAgentWorkFolder(volumeName, wf)
 	return wf, nil
 }
 
-func (m *Manager) cacheAgentWorkFolder(volumeName, folder, errMsg string, ok bool) {
+func (m *Manager) cacheAgentWorkFolder(volumeName, folder string) {
 	m.agentWFMu.Lock()
 	if m.agentWF == nil {
 		m.agentWF = make(map[string]agentWorkFolderCache)
 	}
-	m.agentWF[volumeName] = agentWorkFolderCache{folder: folder, err: errMsg, ok: ok}
+	m.agentWF[volumeName] = agentWorkFolderCache{folder: folder}
+	m.agentWFMu.Unlock()
+}
+
+func (m *Manager) cacheAgentWorkFolderMissing(volumeName string) {
+	m.agentWFMu.Lock()
+	if m.agentWF == nil {
+		m.agentWF = make(map[string]agentWorkFolderCache)
+	}
+	m.agentWF[volumeName] = agentWorkFolderCache{missing: true}
 	m.agentWFMu.Unlock()
 }
 
@@ -240,7 +247,11 @@ func (m *Manager) clearRunnerConfigForReconfigure(ctx context.Context, volumeNam
 		return nil
 	}
 	m.invalidateAgentWorkFolder(volumeName)
-	return m.Docker.RemoveVolumeFiles(ctx, volumeName, runnerConfigFile)
+	wh := m.workdirHostOrDocker()
+	if wh == nil {
+		return fmt.Errorf("docker unavailable")
+	}
+	return wh.RemoveVolumeFiles(ctx, volumeName, runnerConfigFile)
 }
 
 func normalizeStatus(info docker.InspectInfo) (status string, running bool) {
@@ -457,16 +468,41 @@ func (m *Manager) removeLegacyWorkVolume(ctx context.Context, rec store.Runner) 
 }
 
 func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, orgName string, waitRegister bool) error {
+	if err := m.startContainerWithoutVerify(ctx, rec, token, orgName); err != nil {
+		return err
+	}
+	if waitRegister && token != "" {
+		confirmed, err := m.waitForRegistration(ctx, rec.ContainerName)
+		if err != nil {
+			return err
+		}
+		if confirmed {
+			if scrubErr := m.scrubToken(ctx, rec, orgName); scrubErr != nil {
+				slog.Warn("token scrub failed", "runner", rec.ID, "err", scrubErr)
+			}
+		} else {
+			slog.Warn("registration not confirmed in logs; leaving RUNNER_TOKEN until next recreate", "runner", rec.ID)
+		}
+	}
+	// Fail closed: agent workFolder must match the host bind after start/configure.
+	return m.verifyAgentWorkdir(ctx, rec)
+}
+
+func (m *Manager) startContainerWithoutVerify(ctx context.Context, rec store.Runner, token, orgName string) error {
 	workdirBind := resolveWorkdirHostPath(rec)
 	if err := validateWorkdirHostPath(workdirBind); err != nil {
 		return err
 	}
-	if err := m.Docker.EnsureHostDir(ctx, workdirBind); err != nil {
+	wh := m.workdirHostOrDocker()
+	if wh == nil {
+		return ErrDockerUnavailable
+	}
+	if err := wh.EnsureHostDir(ctx, workdirBind); err != nil {
 		return fmt.Errorf("ensure workdir host path: %w", err)
 	}
 	if rec.Cache != nil && rec.Cache.Enabled && cacheType(rec.Cache) == "bind" {
 		if hp := strings.TrimSpace(rec.Cache.HostPath); hp != "" {
-			if err := m.Docker.EnsureHostDir(ctx, hp); err != nil {
+			if err := wh.EnsureHostDir(ctx, hp); err != nil {
 				return fmt.Errorf("ensure cache host path: %w", err)
 			}
 		}
@@ -502,20 +538,36 @@ func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, o
 		}
 		return fmt.Errorf("create container: %w", err)
 	}
-	if waitRegister && token != "" {
-		confirmed, err := m.waitForRegistration(ctx, rec.ContainerName)
-		if err != nil {
-			return err
-		}
-		if confirmed {
-			if scrubErr := m.scrubToken(ctx, rec, orgName); scrubErr != nil {
-				slog.Warn("token scrub failed", "runner", rec.ID, "err", scrubErr)
-			}
-		} else {
-			slog.Warn("registration not confirmed in logs; leaving RUNNER_TOKEN until next recreate", "runner", rec.ID)
-		}
-	}
 	return nil
+}
+
+// verifyAgentWorkdir retries reading .runner until workFolder matches the desired host bind.
+func (m *Manager) verifyAgentWorkdir(ctx context.Context, rec store.Runner) error {
+	desired := resolveWorkdirHostPath(rec)
+	m.invalidateAgentWorkFolder(rec.VolumeName)
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		wf, err := m.readAgentWorkFolder(ctx, rec.VolumeName)
+		if err == nil && workdirPathsMatch(wf, desired) {
+			return nil
+		}
+		lastErr = err
+		if err == nil {
+			lastErr = fmt.Errorf("workFolder=%q want %q", wf, desired)
+		}
+		m.invalidateAgentWorkFolder(rec.VolumeName)
+		time.Sleep(1 * time.Second)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("%w: agent workFolder not set to %s after start: %v", ErrValidation, desired, lastErr)
+	}
+	return fmt.Errorf("%w: agent workFolder not set to %s after start", ErrValidation, desired)
 }
 
 func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string) []string {
@@ -618,11 +670,12 @@ func summarizeLogs(logs string) string {
 }
 
 // scrubToken recreates the container without RUNNER_TOKEN so docker inspect cannot retain it.
+// Uses startContainerWithoutVerify to avoid nested verify before the outer startContainer finishes.
 func (m *Manager) scrubToken(ctx context.Context, rec store.Runner, orgName string) error {
 	if err := m.Docker.RemoveContainerTimeout(ctx, rec.ContainerName, StopTimeoutSecs); err != nil {
 		return err
 	}
-	if err := m.startContainer(ctx, rec, "", orgName, false); err != nil {
+	if err := m.startContainerWithoutVerify(ctx, rec, "", orgName); err != nil {
 		return err
 	}
 	info, err := m.Docker.InspectByName(ctx, rec.ContainerName)
@@ -755,33 +808,23 @@ func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) 
 		slog.Warn("volume inspect failed", "volume", rec.VolumeName, "err", volErr)
 	}
 
-	// myoung34 only applies --work at configure time. If .runner workFolder ≠ desired
-	// host bind, clear .runner and reconfigure (token/PAT required). Env/mount alone is not enough.
-	needsReconfigure := !volExists
+	// myoung34 only applies --work at configure time. Env/mount alone is not enough.
+	var agentWF string
+	var agentErr error
 	if volExists {
-		wf, wfErr := m.readAgentWorkFolder(ctx, rec.VolumeName)
-		if wfErr != nil {
-			// No .runner yet → configure will run on start; token still needed.
-			needsReconfigure = true
-			slog.Info("recreate: no usable .runner; will configure", "volume", rec.VolumeName, "err", wfErr)
-		} else if path.Clean(wf) != path.Clean(desiredWork) {
-			needsReconfigure = true
-			slog.Info("recreate: workFolder mismatch; forcing reconfigure",
-				"agent", wf, "desired", desiredWork)
-		}
+		agentWF, agentErr = m.readAgentWorkFolder(ctx, rec.VolumeName)
+	}
+	plan := planWorkdirReconfigure(volExists, agentWF, agentErr, desiredWork)
+	if plan.Needs {
+		slog.Info("recreate: workdir reconfigure required", "reason", plan.Reason, "desired", desiredWork, "agent", agentWF)
 	}
 
 	token := strings.TrimSpace(req.Token)
-	if needsReconfigure {
+	if plan.Needs {
 		var resolveErr error
 		token, resolveErr = m.resolveRegistrationToken(ctx, rec.URL, token)
 		if resolveErr != nil {
 			return View{}, fmt.Errorf("%w: changing or fixing workdir requires reconfigure — provide a registration token or configure GITHUB_PAT (agent workFolder is set only at configure time)", ErrValidation)
-		}
-		if volExists {
-			if err := m.clearRunnerConfigForReconfigure(ctx, rec.VolumeName); err != nil {
-				return View{}, fmt.Errorf("clear .runner for workdir reconfigure: %w", err)
-			}
 		}
 	} else if token == "" && m.PATConfigured() {
 		if minted, err := m.GitHub.MintRegistrationToken(ctx, rec.URL); err != nil {
@@ -791,9 +834,16 @@ func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) 
 		}
 	}
 
+	// Stop the old container before clearing .runner so a failed remove cannot leave
+	// a running agent with a wiped registration file on the volume.
 	if containerInfo.Exists {
 		if err := m.Docker.RemoveContainerTimeout(ctx, rec.ContainerName, StopTimeoutSecs); err != nil && !docker.IsNotFound(err) {
 			return View{}, fmt.Errorf("remove container: %w", err)
+		}
+	}
+	if plan.Needs && volExists {
+		if err := m.clearRunnerConfigForReconfigure(ctx, rec.VolumeName); err != nil {
+			return View{}, fmt.Errorf("clear .runner for workdir reconfigure: %w", err)
 		}
 	}
 	m.removeLegacyWorkVolume(ctx, rec)
@@ -801,7 +851,6 @@ func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) 
 	if err := m.startContainer(ctx, rec, token, info.OrgName(), wait); err != nil {
 		return View{}, err
 	}
-	m.invalidateAgentWorkFolder(rec.VolumeName)
 	return m.Get(ctx, id)
 }
 

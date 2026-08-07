@@ -4,6 +4,8 @@ import {
   parseExtraEnvText,
   buildRuntimePayload,
   cacheFromRunner,
+  normalizeRunnerName,
+  defaultWorkdirHostPath,
 } from './runnerConfig.js'
 
 describe('runnerConfig', () => {
@@ -34,6 +36,11 @@ describe('runnerConfig', () => {
     expect(p.extra_env).toEqual({ A: 'b' })
     expect(p.cache).toEqual({ enabled: false })
     expect(p.workdir_host_path).toBe('')
+  })
+
+  it('normalizes runner names for default workdir', () => {
+    expect(normalizeRunnerName('My Runner')).toBe('my-runner')
+    expect(defaultWorkdirHostPath('My Runner')).toBe('/srv/gha-work/my-runner')
   })
 
   it('includes workdir host path', () => {

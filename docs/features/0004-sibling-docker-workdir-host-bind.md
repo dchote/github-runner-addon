@@ -28,9 +28,11 @@ For every managed runner the control plane:
 
 | Action | Behavior |
 |--------|----------|
-| Create | Configure with `--work` = host path; bind mount; keep credentials on `*-data` |
-| Recreate / Save & apply | Remount + env; if agent `workFolder` mismatches, clear `.runner` and reconfigure (token/PAT required) |
+| Create | `mkdir -p` host path → bind mount → configure `--work` → assert `.runner` `workFolder` matches |
+| Recreate / Save & apply | Stop container → if mismatch, clear `.runner` → start with token/PAT → remount + reconfigure → assert match |
 | Delete | Removes container + `*-data`; **never** deletes the host workdir tree; best-effort removes obsolete `*-work` volumes from older releases |
+
+Order matters: never clear `.runner` while the old container is still running.
 
 ## Diagnostics
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- Harden sibling-Docker workdir pipeline: stop container before clearing `.runner`; assert agent `workFolder` after start; narrow host `mkdir` bind roots; typed `ErrVolumeFileNotFound`; workdirHost test seam + pipeline unit tests; remove unused VolumeMountpoint; UI default path uses normalized runner name
+
 ## 0.4.1
 
 - Create missing workdir (and cache bind) host directories before bind-mount so runner create no longer fails when `/srv/gha-work/<name>` does not exist yet

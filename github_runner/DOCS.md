@@ -28,7 +28,7 @@ Registration credentials live in a Docker named volume per runner (`*-data`). Jo
 
 **Recreate / Save & apply:** remounts the host workdir and sets `RUNNER_WORKDIR`. If the agent `.runner` `workFolder` does not match, the addon clears `.runner` and reconfigures (PAT or registration token required). Env alone never moves the agent workdir. Deleting a runner does **not** delete the host workdir tree.
 
-The manager creates missing workdir (and cache bind) host directories before starting the runner. For non-root runner images, `chown` those paths to the runner uid (often `1000`), or enable **Read-only cache** if workflows only need to read. Prune unused Docker volumes / host trees periodically — the addon does not enforce disk quotas.
+The manager creates missing workdir (and cache bind) host directories before starting the runner (helper bind-mounts the narrowest root such as `/srv`, then `mkdir -p`). After start it asserts the agent `workFolder` matches that path. For non-root runner images, `chown` those paths to the runner uid (often `1000`), or enable **Read-only cache** if workflows only need to read. Prune unused Docker volumes / host trees periodically — the addon does not enforce disk quotas.
 
 ## Configuration
 

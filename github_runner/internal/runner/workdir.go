@@ -2,10 +2,12 @@ package runner
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
 
+	"github.com/dchote/github-runner-addon/internal/container/docker"
 	"github.com/dchote/github-runner-addon/internal/store"
 )
 
@@ -14,15 +16,14 @@ const (
 	runnerConfigFile   = ".runner"
 )
 
+// errNoRunnerConfig means the registration volume has no .runner file yet.
+var errNoRunnerConfig = errors.New("no .runner")
+
 // defaultWorkdirHostPath is the per-runner same-path host bind when workdir_host_path is unset.
 func defaultWorkdirHostPath(rec store.Runner) string {
 	suffix := strings.TrimPrefix(rec.ContainerName, "gha-runner-")
 	if suffix == "" || suffix == rec.ContainerName {
-		if n := strings.TrimSpace(rec.Name); n != "" {
-			suffix = n
-		} else {
-			suffix = "runner"
-		}
+		suffix = docker.NormalizeName(rec.Name)
 	}
 	return path.Join(defaultWorkdirRoot, suffix)
 }
@@ -95,4 +96,35 @@ func parseRunnerWorkFolder(raw []byte) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(cfg.WorkFolder), nil
+}
+
+func workdirPathsMatch(a, b string) bool {
+	return path.Clean(strings.TrimSpace(a)) == path.Clean(strings.TrimSpace(b))
+}
+
+// workdirReconfigurePlan decides whether myoung34 must re-run config.sh --work.
+type workdirReconfigurePlan struct {
+	Needs  bool
+	Reason string
+}
+
+func planWorkdirReconfigure(volExists bool, agentWF string, agentErr error, desired string) workdirReconfigurePlan {
+	desired = path.Clean(strings.TrimSpace(desired))
+	if !volExists {
+		return workdirReconfigurePlan{Needs: true, Reason: "registration volume missing"}
+	}
+	if agentErr != nil {
+		if errors.Is(agentErr, errNoRunnerConfig) {
+			return workdirReconfigurePlan{Needs: true, Reason: "no .runner on volume"}
+		}
+		// Unreadable config: force reconfigure so create/apply does not silently keep a bad state.
+		return workdirReconfigurePlan{Needs: true, Reason: "unable to read .runner"}
+	}
+	if strings.TrimSpace(agentWF) == "" {
+		return workdirReconfigurePlan{Needs: true, Reason: "empty workFolder"}
+	}
+	if !workdirPathsMatch(agentWF, desired) {
+		return workdirReconfigurePlan{Needs: true, Reason: "workFolder mismatch"}
+	}
+	return workdirReconfigurePlan{Needs: false}
 }

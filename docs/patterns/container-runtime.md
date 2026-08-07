@@ -30,11 +30,13 @@ Per-runner mounts (see [0003-persistent-runner-cache](../features/0003-persisten
 | Mount | When | Storage | Target | Notes |
 |-------|------|---------|--------|-------|
 | Cache | optional (`cache.enabled`) | Named volume or host bind | default `/cache` | Same `volume_name` / `host_path` across runners shares the cache |
-| Workdir | **always** | Host directory | default `/srv/gha-work/<name>` (same-path bind) | `RUNNER_WORKDIR` + agent `workFolder` must match; not a Docker volume `_data` path |
+| Workdir | **always** | Host directory | default `/srv/gha-work/<normalized-name>` (same-path bind) | `RUNNER_WORKDIR` + agent `workFolder` must match; not a Docker volume `_data` path |
 
 Prefer **named volumes** for cache on Home Assistant OS. Workdir and cache host binds use **Docker host** paths (not addon `/data` or `/share`).
 
-`myoung34/github-runner` sets `--work` only at **configure** time. Recreate remounts the host bind and sets `RUNNER_WORKDIR`, but if `/runner/data/.runner` `workFolder` differs, the manager clears `.runner` and reconfigures (registration token or PAT required). Env alone never moves the agent workdir.
+Before bind-mount, the manager `mkdir -p`s missing host dirs via a one-shot helper that bind-mounts the narrowest known root (`/srv`, `/mnt`, …) containing the path (not `/` unless necessary).
+
+`myoung34/github-runner` sets `--work` only at **configure** time. Recreate stops the container first, then clears `.runner` when `workFolder` differs, then starts with a token/PAT. After start, the manager asserts agent `workFolder` matches the host bind (fail closed). Env alone never moves the agent workdir.
 
 Container `StopTimeout` is **120s** for managed runners. Stop/restart use the container’s configured timeout, or **30s** if unset (e.g. older containers).
 
