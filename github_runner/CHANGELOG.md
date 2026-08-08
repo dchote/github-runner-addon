@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+- Show runner **idle/busy** job activity (and current job fields while busy) from local Actions job hooks — no PAT required; see [0005](../docs/features/0005-runner-job-state.md)
+- Status column shows idle/busy/unknown when the container is running; details pane lists current job metadata
+- After upgrade, **Recreate** existing runners so `ACTIONS_RUNNER_HOOK_JOB_*` env is applied
+
 ## 0.4.4
 
 - Harden Docker lifecycle against client/ingress cancel: detached create/recreate/scrub contexts; fail closed on workdir verify (return error, keep runner for recovery); do not clear `.runner` on transient read cancel

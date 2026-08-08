@@ -32,7 +32,7 @@ It is aimed at home-lab and small-team operators who want persistent self-hosted
 ## Core User Flows
 
 1. **Create runner** — enter name, GitHub project URL, and either a registration token or rely on a configured PAT; optional labels, runtime limits, cache, and workdir host path (default `/srv/gha-work/<name>`).
-2. **Monitor** — table of local runners with Docker status; start / stop / restart / recreate / delete; orphan-container warnings when present; workdir mismatch when agent `workFolder` ≠ host bind (details pane loads live agent diagnostics; list uses cache).
+2. **Monitor** — table of local runners with Docker status; when a container is running, status shows job activity (**idle** / **busy** / **unknown**) from local job hooks (no PAT); details show current job fields while busy; start / stop / restart / recreate / delete; orphan-container warnings when present; workdir mismatch when agent `workFolder` ≠ host bind (details pane loads live agent diagnostics; list uses cache).
 3. **Edit** — update labels, image, resources, env, docker-sock override, cache, workdir; apply recreates and reconfigures when workdir must move.
 4. **Logs** — view and follow the runner container’s stdout/stderr.
 5. **Delete** — remove local container and registration volume; host workdir trees are left on disk; shared cache volumes only when unreferenced. With PAT, also deregister from GitHub when possible.
@@ -43,7 +43,7 @@ It is aimed at home-lab and small-team operators who want persistent self-hosted
 - GitHub App JWT installation auth (classic/fine-grained PAT only).
 - Application-level API keys / RBAC (network trust: HA ingress or private network; do not expose the UI publicly).
 - Full host OS management.
-- Job history / workflow correlation from the GitHub API.
+- Job history / workflow correlation from the GitHub API (current job only, via local runner hooks — see [0005](features/0005-runner-job-state.md)).
 - Replacing or forking the upstream runner image — we orchestrate [`myoung34/github-runner`](https://github.com/myoung34/docker-github-actions-runner).
 
 ## Security boundary

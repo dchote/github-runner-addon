@@ -52,3 +52,35 @@ func TestEnsureHostDirRejectsInvalid(t *testing.T) {
 		}
 	}
 }
+
+func TestHostBindPaths(t *testing.T) {
+	root, cp, err := hostBindPaths("/srv/gha-work/lab/.gha-addon/status.json")
+	if err != nil || root != "/srv" || cp != "/host/gha-work/lab/.gha-addon/status.json" {
+		t.Fatalf("root=%q cp=%q err=%v", root, cp, err)
+	}
+	if _, _, err := hostBindPaths(""); err == nil {
+		t.Fatal("expected reject")
+	}
+}
+
+func TestWriteHostFileRejectsInvalid(t *testing.T) {
+	c := &Client{}
+	for _, p := range []string{"", "/", "relative", "/tmp/../etc"} {
+		if err := c.WriteHostFile(context.Background(), p, []byte("x"), 0o644); err == nil {
+			t.Fatalf("expected reject for %q", p)
+		}
+	}
+}
+
+func TestReadContainerFileRejectsInvalid(t *testing.T) {
+	c := &Client{}
+	if _, err := c.ReadContainerFile(context.Background(), "", "/x"); err == nil {
+		t.Fatal("empty container")
+	}
+	if _, err := c.ReadContainerFile(context.Background(), "c", "relative"); err == nil {
+		t.Fatal("relative path")
+	}
+	if _, err := c.ReadContainerFile(context.Background(), "c", "/tmp/../etc/passwd"); err == nil {
+		t.Fatal("dotdot")
+	}
+}

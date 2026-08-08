@@ -58,13 +58,15 @@ Creating a runner:
 4. Create named volume + container from configured runner image (default **`myoung34/github-runner`**) with env understood by that image’s entrypoint:
    `REPO_URL` / `ORG_NAME`, `RUNNER_NAME`, `RUNNER_TOKEN`, `LABELS`,
    `CONFIGURED_ACTIONS_RUNNER_FILES_DIR`, `RUNNER_SCOPE`,
-   `DISABLE_AUTO_UPDATE`, `DISABLE_AUTOMATIC_DEREGISTRATION`
-   (the last is required with reusage or the image entrypoint exits 1).
+   `DISABLE_AUTO_UPDATE`, `DISABLE_AUTOMATIC_DEREGISTRATION`,
+   `ACTIONS_RUNNER_HOOK_JOB_STARTED`, `ACTIONS_RUNNER_HOOK_JOB_COMPLETED`
+   (the deregistration flag is required with reusage or the image entrypoint exits 1;
+   hooks write `$RUNNER_WORKDIR/.gha-addon/status.json` for idle/busy — see [0005](features/0005-runner-job-state.md)).
 5. Labels: `com.github-runner-addon.managed=true`, `com.github-runner-addon.id=<id>`.
 6. Wait briefly for registration success in container logs; on failure roll back.
 7. Scrub `RUNNER_TOKEN` from container env by recreating the container against the same volume (registration files remain).
 
-List merges JSON records with Docker inspect status (`missing` when the container is absent). Startup/periodic reconcile does not mutate the store for missing containers; it inventories unmanaged labeled **orphan** containers (no matching store row) and exposes them on `/api/v1/health`.
+List merges JSON records with Docker inspect status (`missing` when the container is absent). When the container is running, enrich also reads local job-hook `status.json` (`job_state` / `current_job`). Startup/periodic reconcile does not mutate the store for missing containers; it inventories unmanaged labeled **orphan** containers (no matching store row) and exposes them on `/api/v1/health`.
 
 Upstream image behavior (tools inside the container, registration edge cases, OS packages) is documented in [myoung34/docker-github-actions-runner](https://github.com/myoung34/docker-github-actions-runner). Prefer pinning `RUNNER_IMAGE` to a digest.
 

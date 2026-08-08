@@ -14,7 +14,25 @@
       Agent workFolder does not match the host bind — Save &amp; apply (reconfigure) required.
     </p>
     <p class="text-body-medium mb-1"><strong>Image:</strong> {{ runner.image }}</p>
-    <p class="text-body-medium mb-1"><strong>Status:</strong> {{ runner.status }}</p>
+    <p class="text-body-medium mb-1"><strong>Container status:</strong> {{ runner.status }}</p>
+    <p v-if="runner.running" class="text-body-medium mb-1">
+      <strong>Job status:</strong> {{ runner.job_state || 'unknown' }}
+    </p>
+    <template v-if="currentJob">
+      <p class="text-body-medium font-weight-medium mb-1 mt-2">Current job</p>
+      <p class="text-body-medium mb-1"><strong>Repository:</strong> {{ field(currentJob.repository) }}</p>
+      <p class="text-body-medium mb-1"><strong>Workflow:</strong> {{ field(currentJob.workflow) }}</p>
+      <p class="text-body-medium mb-1"><strong>Job:</strong> {{ field(currentJob.job) }}</p>
+      <p class="text-body-medium mb-1">
+        <strong>Run:</strong>
+        {{ runLabel }}
+      </p>
+      <p class="text-body-medium mb-1"><strong>Event:</strong> {{ field(currentJob.event) }}</p>
+      <p class="text-body-medium mb-1"><strong>Actor:</strong> {{ field(currentJob.actor) }}</p>
+      <p class="text-body-medium mb-1"><strong>Ref:</strong> {{ field(currentJob.ref) }}</p>
+      <p class="text-body-medium mb-1"><strong>SHA:</strong> {{ shaLabel }}</p>
+      <p class="text-body-medium mb-1"><strong>Updated:</strong> {{ formatTime(currentJob.updated_at) }}</p>
+    </template>
     <p class="text-body-medium mb-1">
       <strong>Labels:</strong>
       <span v-if="labels.length">{{ labels.join(', ') }}</span>
@@ -53,6 +71,23 @@ const props = defineProps({
 
 const labels = computed(() => props.runner?.labels || [])
 const extraEnvKeys = computed(() => Object.keys(props.runner?.extra_env || {}))
+const currentJob = computed(() => {
+  if (props.runner?.job_state !== 'busy') return null
+  return props.runner?.current_job || null
+})
+const runLabel = computed(() => {
+  const j = currentJob.value
+  if (!j) return '—'
+  const num = j.run_number || '—'
+  const id = j.run_id ? ` (#${j.run_id})` : ''
+  const attempt = j.run_attempt && j.run_attempt !== '1' ? ` attempt ${j.run_attempt}` : ''
+  return `${num}${id}${attempt}`
+})
+const shaLabel = computed(() => {
+  const sha = currentJob.value?.sha
+  if (!sha) return '—'
+  return sha.length > 12 ? `${sha.slice(0, 12)}…` : sha
+})
 const sockLabel = computed(() => {
   const v = props.runner?.mount_docker_sock
   if (v === true) return 'mounted (override)'
@@ -87,6 +122,10 @@ const workdirLabel = computed(() => {
   }
   return '—'
 })
+
+function field(v) {
+  return v || '—'
+}
 
 function formatTime(v) {
   if (!v) return '—'

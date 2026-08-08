@@ -1,17 +1,31 @@
 import { describe, expect, it } from 'vitest'
-import { countByStatus, statusColor } from './runnerStatus.js'
+import { countByStatus, displayStatus, statusColor } from './runnerStatus.js'
 
 describe('runnerStatus', () => {
   it('maps status colors', () => {
     expect(statusColor('running')).toBe('success')
+    expect(statusColor('idle')).toBe('success')
+    expect(statusColor('busy')).toBe('warning')
     expect(statusColor('exited')).toBe('warning')
     expect(statusColor('missing')).toBe('error')
     expect(statusColor('unknown')).toBe('info')
   })
 
-  it('counts by status', () => {
+  it('counts by status and busy jobs', () => {
     expect(
-      countByStatus([{ status: 'running' }, { status: 'running' }, { status: 'missing' }]),
-    ).toEqual({ running: 2, exited: 0, missing: 1, unknown: 0, total: 3 })
+      countByStatus([
+        { status: 'running', job_state: 'idle' },
+        { status: 'running', job_state: 'busy' },
+        { status: 'missing' },
+      ]),
+    ).toEqual({ running: 2, exited: 0, missing: 1, unknown: 0, busy: 1, total: 3 })
+  })
+
+  it('displayStatus prefers job_state when running', () => {
+    expect(displayStatus({ status: 'running', running: true, job_state: 'idle' })).toBe('idle')
+    expect(displayStatus({ status: 'running', running: true, job_state: 'busy' })).toBe('busy')
+    expect(displayStatus({ status: 'running', running: true })).toBe('unknown')
+    expect(displayStatus({ status: 'exited', running: false })).toBe('exited')
+    expect(displayStatus({ status: 'missing' })).toBe('missing')
   })
 })

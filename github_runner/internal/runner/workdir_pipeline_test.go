@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ type fakeWorkdirHost struct {
 	mu sync.Mutex
 
 	ensureDirs []string
+	hostFiles  map[string][]byte // absolute host path -> content
 	files      map[string][]byte // volume/path -> content
 	removed    []string
 	ensureErr  error
@@ -23,7 +25,10 @@ type fakeWorkdirHost struct {
 }
 
 func newFakeWorkdirHost() *fakeWorkdirHost {
-	return &fakeWorkdirHost{files: map[string][]byte{}}
+	return &fakeWorkdirHost{
+		files:     map[string][]byte{},
+		hostFiles: map[string][]byte{},
+	}
 }
 
 func (f *fakeWorkdirHost) key(vol, rel string) string { return vol + "/" + rel }
@@ -35,6 +40,27 @@ func (f *fakeWorkdirHost) EnsureHostDir(_ context.Context, hostPath string) erro
 		return f.ensureErr
 	}
 	f.ensureDirs = append(f.ensureDirs, hostPath)
+	return nil
+}
+
+func (f *fakeWorkdirHost) WriteHostFile(_ context.Context, hostPath string, data []byte, _ os.FileMode) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hostFiles[hostPath] = append([]byte(nil), data...)
+	return nil
+}
+
+func (f *fakeWorkdirHost) ReadHostFile(_ context.Context, hostPath string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.hostFiles[hostPath]
+	if !ok {
+		return nil, docker.ErrHostFileNotFound
+	}
+	return append([]byte(nil), b...), nil
+}
+
+func (f *fakeWorkdirHost) ChmodHostPath(_ context.Context, _ string, _ os.FileMode) error {
 	return nil
 }
 
@@ -215,7 +241,21 @@ func TestEnsurePersistenceHostDirs(t *testing.T) {
 	if err := m.ensurePersistenceHostDirs(context.Background(), rec, workdir); err != nil {
 		t.Fatal(err)
 	}
-	if len(fh.ensureDirs) != 2 {
+	if len(fh.ensureDirs) < 2 {
 		t.Fatalf("ensureDirs=%v", fh.ensureDirs)
+	}
+	want := map[string]bool{workdir: false, workdir + "/" + jobHooksDirRel: false, "/mnt/cache/lab": false}
+	for _, d := range fh.ensureDirs {
+		if _, ok := want[d]; ok {
+			want[d] = true
+		}
+	}
+	for d, ok := range want {
+		if !ok {
+			t.Fatalf("missing ensure %s in %v", d, fh.ensureDirs)
+		}
+	}
+	if _, ok := fh.hostFiles[jobStatusHostPath(workdir)]; !ok {
+		t.Fatal("expected seeded job status.json")
 	}
 }

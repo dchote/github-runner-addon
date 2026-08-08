@@ -103,16 +103,21 @@
           <v-col cols="12" :md="selected && isDesktop ? 8 : 12">
             <v-data-table
               :headers="headers"
-              :items="runners"
+              :items="tableRunners"
               item-value="id"
               class="runners-table"
               hover
               :row-props="rowProps"
               @click:row="onRowClick"
             >
-              <template #item.status="{ item }">
-                <v-chip size="small" label :color="statusColor(item.status)" variant="tonal">
-                  {{ item.status }}
+              <template #item.display_status="{ item }">
+                <v-chip
+                  size="small"
+                  label
+                  :color="statusColor(item.display_status)"
+                  variant="tonal"
+                >
+                  {{ item.display_status }}
                 </v-chip>
               </template>
               <template #item.labels="{ item }">
@@ -255,7 +260,7 @@ import RunnerDetailsHeader from '@/components/RunnerDetailsHeader.vue'
 import RunnerActions from '@/components/RunnerActions.vue'
 import RunnerLogsDialog from '@/components/RunnerLogsDialog.vue'
 import { useListDetailsPane } from '@/composables/useListDetailsPane'
-import { countByStatus, statusColor } from '@/utils/runnerStatus'
+import { countByStatus, displayStatus, statusColor } from '@/utils/runnerStatus'
 
 const store = useStore()
 const route = useRoute()
@@ -274,14 +279,18 @@ let pollTimer
 const headers = [
   { title: 'Name', key: 'name', sortable: true },
   { title: 'Project URL', key: 'url', sortable: true },
-  { title: 'Status', key: 'status', sortable: true },
+  { title: 'Status', key: 'display_status', sortable: true },
   { title: 'Labels', key: 'labels', sortable: false },
 ]
 
 const runners = computed(() => store.state.runners)
+const tableRunners = computed(() =>
+  (runners.value || []).map((r) => ({ ...r, display_status: displayStatus(r) })),
+)
 const counts = computed(() => countByStatus(runners.value))
 const summaryChips = computed(() => [
   { key: 'running', label: 'Running', value: counts.value.running, color: statusColor('running') },
+  { key: 'busy', label: 'Busy', value: counts.value.busy, color: statusColor('busy') },
   { key: 'exited', label: 'Exited', value: counts.value.exited, color: statusColor('exited') },
   { key: 'missing', label: 'Missing', value: counts.value.missing, color: statusColor('missing') },
   { key: 'total', label: 'Total', value: counts.value.total, color: statusColor('unknown') },

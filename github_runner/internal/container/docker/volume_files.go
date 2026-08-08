@@ -1,11 +1,9 @@
 package docker
 
 import (
-	"archive/tar"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -65,23 +63,7 @@ func (c *Client) ReadVolumeFile(ctx context.Context, volumeName, relPath string)
 		return nil, err
 	}
 	defer reader.Close()
-
-	tr := tar.NewReader(reader)
-	hdr, err := tr.Next()
-	if errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%w: %s in %s", ErrVolumeFileNotFound, relPath, volumeName)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if hdr.Typeflag != tar.TypeReg {
-		return nil, fmt.Errorf("%s in %s is not a regular file", relPath, volumeName)
-	}
-	data, err := io.ReadAll(tr)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
+	return readTarRegularFile(reader, ErrVolumeFileNotFound, relPath+" in "+volumeName)
 }
 
 // RemoveVolumeFiles deletes paths inside a named volume (relative to volume root).

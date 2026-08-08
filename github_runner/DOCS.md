@@ -16,9 +16,13 @@ For a fuller product description, install notes, and attribution, see the [repos
 2. Click **Create runner**.
 3. Enter a unique **name**, the **GitHub project URL** (repository or organization), and a **registration token** (optional when a PAT is configured).
 4. Optionally set labels, CPU/memory limits, persistent cache, workdir host path (default `/srv/gha-work/<name>`), and other runtime fields.
-5. Monitor status in the table; use **Edit**, **Logs**, **Recreate**, and lifecycle actions as needed.
+5. Monitor status in the table; use **Edit**, **Logs**, **Recreate**, and lifecycle actions as needed. When a container is **running**, the Status column shows **idle** / **busy** / **unknown** (job activity from local hooks, no PAT). Details show current job fields while busy.
 
 Registration tokens are passed to the runner container only until registration succeeds (then scrubbed from container env). They are not stored in `runners.json`. The PAT is never written into runner containers.
+
+### Job activity (idle / busy)
+
+The manager installs official Actions job hooks under the runner workdir (`.gha-addon/hooks/`) and sets `ACTIONS_RUNNER_HOOK_JOB_*` on the container. Hooks write a small `status.json` the UI reads — no GitHub API call. After upgrading the addon, **Recreate** existing runners so env is refreshed, or running containers may show **unknown** (plain Start does not change env). Workflow runs gain **Set up runner** / **Complete runner** steps from these hooks. The `.gha-addon/` directory is world-writable so the runner uid can update status — treat it as telemetry, not a trust boundary. See [0005](../docs/features/0005-runner-job-state.md).
 
 ## Persistence
 

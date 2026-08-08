@@ -45,6 +45,8 @@ var managedEnvKeys = map[string]struct{}{
 	"APP_ID":                              {},
 	"APP_PRIVATE_KEY":                     {},
 	"APP_INSTALLATION_ID":                 {},
+	"ACTIONS_RUNNER_HOOK_JOB_STARTED":     {},
+	"ACTIONS_RUNNER_HOOK_JOB_COMPLETED":   {},
 }
 
 var registrationSuccessMarkers = []string{
@@ -85,6 +87,10 @@ type Manager struct {
 	// agentWorkFolder caches successful .runner reads (and missing-file) per data volume.
 	agentWFMu sync.RWMutex
 	agentWF   map[string]agentWorkFolderCache
+
+	// jobStatusCache short-TTL cache of status.json bytes (keyed by host path).
+	jobStatusMu    sync.RWMutex
+	jobStatusCache map[string]jobStatusCacheEntry
 
 	// verifyTimeout bounds post-start workFolder checks (0 = 45s). Tests may shorten it.
 	verifyTimeout time.Duration
@@ -154,12 +160,14 @@ type RecreateRequest struct {
 
 type View struct {
 	store.Runner
-	Status           string `json:"status"`
-	Running          bool   `json:"running"`
-	WorkdirEffective string `json:"workdir_effective,omitempty"` // resolved host path (RUNNER_WORKDIR / bind)
-	WorkdirAgent     string `json:"workdir_agent,omitempty"`     // workFolder from /runner/data/.runner
-	WorkdirMismatch  bool   `json:"workdir_mismatch,omitempty"`  // agent workFolder ≠ effective path
-	WorkdirError     string `json:"workdir_error,omitempty"`     // diagnostics error reading .runner
+	Status           string      `json:"status"`
+	Running          bool        `json:"running"`
+	JobState         string      `json:"job_state,omitempty"`   // idle|busy|unknown when Running
+	CurrentJob       *CurrentJob `json:"current_job,omitempty"` // set when job_state=busy
+	WorkdirEffective string      `json:"workdir_effective,omitempty"` // resolved host path (RUNNER_WORKDIR / bind)
+	WorkdirAgent     string      `json:"workdir_agent,omitempty"`     // workFolder from /runner/data/.runner
+	WorkdirMismatch  bool        `json:"workdir_mismatch,omitempty"`  // agent workFolder ≠ effective path
+	WorkdirError     string      `json:"workdir_error,omitempty"`     // diagnostics error reading .runner
 }
 
 func (m *Manager) PATConfigured() bool {
@@ -188,6 +196,13 @@ func (m *Manager) enrich(ctx context.Context, r store.Runner, opts enrichOpts) V
 		return v
 	}
 	v.Status, v.Running = normalizeStatus(info)
+	if v.Running {
+		ref := info.ID
+		if ref == "" {
+			ref = r.ContainerName
+		}
+		m.applyJobStatus(ctx, &v, ref, v.WorkdirEffective)
+	}
 	return v
 }
 
@@ -543,6 +558,9 @@ func (m *Manager) ensurePersistenceHostDirs(ctx context.Context, rec store.Runne
 	if err := wh.EnsureHostDir(ctx, workdirBind); err != nil {
 		return fmt.Errorf("ensure workdir host path: %w", err)
 	}
+	if err := m.installJobHooks(ctx, workdirBind); err != nil {
+		return err
+	}
 	if rec.Cache != nil && rec.Cache.Enabled && cacheType(rec.Cache) == "bind" {
 		if hp := strings.TrimSpace(rec.Cache.HostPath); hp != "" {
 			if err := wh.EnsureHostDir(ctx, hp); err != nil {
@@ -642,6 +660,8 @@ func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string) []s
 		"RUNNER_WORKDIR=" + workdir,
 		"DISABLE_AUTO_UPDATE=true",
 		"DISABLE_AUTOMATIC_DEREGISTRATION=true",
+		"ACTIONS_RUNNER_HOOK_JOB_STARTED=" + jobStartedHookPath(workdir),
+		"ACTIONS_RUNNER_HOOK_JOB_COMPLETED=" + jobCompletedHookPath(workdir),
 	}
 	if token != "" {
 		env = append(env, "RUNNER_TOKEN="+token)
@@ -945,9 +965,17 @@ func (m *Manager) applyLifecycle(ctx context.Context, id string, op func(context
 }
 
 func (m *Manager) Start(ctx context.Context, id string) (View, error) {
-	return m.applyLifecycle(ctx, id, func(ctx context.Context, name string) error {
-		return m.Docker.Start(ctx, name)
-	})
+	if m.Docker == nil {
+		return View{}, ErrDockerUnavailable
+	}
+	r, err := m.Store.Get(id)
+	if err != nil {
+		return View{}, err
+	}
+	if err := m.ensureHooksThenStart(ctx, r); err != nil {
+		return View{}, err
+	}
+	return m.Get(ctx, id)
 }
 
 func (m *Manager) Stop(ctx context.Context, id string) (View, error) {
@@ -957,9 +985,17 @@ func (m *Manager) Stop(ctx context.Context, id string) (View, error) {
 }
 
 func (m *Manager) Restart(ctx context.Context, id string) (View, error) {
-	return m.applyLifecycle(ctx, id, func(ctx context.Context, name string) error {
-		return m.Docker.Restart(ctx, name)
-	})
+	if m.Docker == nil {
+		return View{}, ErrDockerUnavailable
+	}
+	r, err := m.Store.Get(id)
+	if err != nil {
+		return View{}, err
+	}
+	if err := m.ensureHooksThenRestart(ctx, r); err != nil {
+		return View{}, err
+	}
+	return m.Get(ctx, id)
 }
 
 func (m *Manager) Delete(ctx context.Context, id string) error {

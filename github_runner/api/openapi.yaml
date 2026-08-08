@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GitHub Runner Manager API
-  version: 0.4.4
+  version: 0.5.0
   description: |
     Control-plane API for Docker-based GitHub Actions self-hosted runners.
 
@@ -325,6 +325,39 @@ components:
     RunnerStatus:
       type: string
       enum: [running, exited, missing, unknown]
+    JobState:
+      type: string
+      enum: [idle, busy, unknown]
+      description: |
+        Actions agent activity when the container is running, from local job hooks
+        (status.json). Omitted when the container is not running.
+    CurrentJob:
+      type: object
+      description: Present when job_state is busy (from ACTIONS_RUNNER_HOOK_JOB_* env).
+      properties:
+        repository:
+          type: string
+        workflow:
+          type: string
+        job:
+          type: string
+        run_id:
+          type: string
+        run_number:
+          type: string
+        run_attempt:
+          type: string
+        sha:
+          type: string
+        ref:
+          type: string
+        actor:
+          type: string
+        event:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
     Runner:
       type: object
       properties:
@@ -386,6 +419,10 @@ components:
           $ref: "#/components/schemas/RunnerStatus"
         running:
           type: boolean
+        job_state:
+          $ref: "#/components/schemas/JobState"
+        current_job:
+          $ref: "#/components/schemas/CurrentJob"
     CacheConfig:
       type: object
       description: |
