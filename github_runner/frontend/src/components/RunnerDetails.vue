@@ -13,6 +13,16 @@
     <p v-if="runner.workdir_mismatch" class="text-body-small text-error mb-1">
       Agent workFolder does not match the host bind — Save &amp; apply (reconfigure) required.
     </p>
+    <v-alert
+      v-for="(w, i) in warnings"
+      :key="`warn-${i}`"
+      class="mb-2"
+      type="warning"
+      variant="tonal"
+      density="comfortable"
+    >
+      {{ w }}
+    </v-alert>
     <p class="text-body-medium mb-1"><strong>Image:</strong> {{ runner.image }}</p>
     <p class="text-body-medium mb-1"><strong>Container status:</strong> {{ runner.status }}</p>
     <p v-if="runner.running" class="text-body-medium mb-1">
@@ -70,6 +80,9 @@ const props = defineProps({
 })
 
 const labels = computed(() => props.runner?.labels || [])
+const warnings = computed(() =>
+  Array.isArray(props.runner?.warnings) ? props.runner.warnings.filter(Boolean) : [],
+)
 const extraEnvKeys = computed(() => Object.keys(props.runner?.extra_env || {}))
 const currentJob = computed(() => {
   if (props.runner?.job_state !== 'busy') return null

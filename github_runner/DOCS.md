@@ -28,7 +28,7 @@ The manager installs official Actions job hooks under the runner workdir (`.gha-
 
 Runner expected configuration is stored at `/data/runners.json` (Home Assistant’s standard app data directory). That path is always mounted, included in HA backups, and does not require extra `map:` entries.
 
-Registration credentials live in a Docker named volume per runner (`*-data`). Job workdir is a **host directory** same-path bind (default `/srv/gha-work/<name>`) so sibling `docker run -v $GITHUB_WORKSPACE` works with the Docker socket — not a Docker volume `_data` path. Optional **persistent cache** (named volume or host bind at `/cache`) is separate. Large volumes are **not** part of HA `/data` backups.
+Registration credentials live in a Docker named volume per runner (`*-data`). Job workdir is a **host directory** same-path bind (default `/srv/gha-work/<name>`) so sibling `docker run -v $GITHUB_WORKSPACE` works with the Docker socket — not a Docker volume `_data` path. Optional **persistent cache** (named volume or host bind at `/cache`) is separate. When workflows or Buildx use the cache **target** as a host path, use a bind with `host_path` equal to `target` (commonly both `/cache`); a mismatched bind is allowed but returns soft `warnings[]`. Large volumes are **not** part of HA `/data` backups.
 
 **Recreate / Save & apply:** remounts the host workdir and sets `RUNNER_WORKDIR`. If the agent `.runner` `workFolder` does not match, the addon clears `.runner` and reconfigures (PAT or registration token required). Env alone never moves the agent workdir. After start, a mismatched `workFolder` fails the request (fail closed). Deleting a runner does **not** delete the host workdir tree.
 

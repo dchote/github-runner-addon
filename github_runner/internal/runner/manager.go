@@ -174,12 +174,13 @@ type View struct {
 	store.Runner
 	Status           string      `json:"status"`
 	Running          bool        `json:"running"`
-	JobState         string      `json:"job_state,omitempty"`   // idle|busy|unknown when Running
-	CurrentJob       *CurrentJob `json:"current_job,omitempty"` // set when job_state=busy
+	JobState         string      `json:"job_state,omitempty"`         // idle|busy|unknown when Running
+	CurrentJob       *CurrentJob `json:"current_job,omitempty"`       // set when job_state=busy
 	WorkdirEffective string      `json:"workdir_effective,omitempty"` // resolved host path (RUNNER_WORKDIR / bind)
 	WorkdirAgent     string      `json:"workdir_agent,omitempty"`     // workFolder from /runner/data/.runner
 	WorkdirMismatch  bool        `json:"workdir_mismatch,omitempty"`  // agent workFolder ≠ effective path
 	WorkdirError     string      `json:"workdir_error,omitempty"`     // diagnostics error reading .runner
+	Warnings         []string    `json:"warnings,omitempty"`          // soft config advisories (do not fail the request)
 }
 
 func (m *Manager) PATConfigured() bool {
@@ -194,6 +195,9 @@ type enrichOpts struct {
 
 func (m *Manager) enrich(ctx context.Context, r store.Runner, opts enrichOpts) View {
 	v := View{Runner: r, Status: "unknown", WorkdirEffective: resolveWorkdirHostPath(r)}
+	if warns := cacheSiblingWarnings(r.Cache); len(warns) > 0 {
+		v.Warnings = append(v.Warnings, warns...)
+	}
 	if r.VolumeName != "" {
 		m.applyWorkdirDiagnostics(ctx, &v, r.VolumeName, opts.workdirDiag)
 	}
@@ -438,6 +442,9 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 	cache := normalizeCache(req.Cache)
 	if err := validateCache(cache); err != nil {
 		return View{}, err
+	}
+	for _, w := range cacheSiblingWarnings(cache) {
+		slog.Warn("cache config advisory", "runner", name, "warning", w)
 	}
 	id := uuid.NewString()
 	norm := docker.NormalizeName(name)
@@ -916,6 +923,9 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 	}
 	if err := validateCache(rec.Cache); err != nil {
 		return View{}, err
+	}
+	for _, w := range cacheSiblingWarnings(rec.Cache) {
+		slog.Warn("cache config advisory", "runner", rec.Name, "id", id, "warning", w)
 	}
 	if err := validateWorkdirHostPath(resolveWorkdirHostPath(rec)); err != nil {
 		return View{}, err

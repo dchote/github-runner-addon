@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GitHub Runner Manager API
-  version: 0.5.1
+  version: 0.5.2
   description: |
     Control-plane API for Docker-based GitHub Actions self-hosted runners.
 
@@ -415,6 +415,11 @@ components:
         workdir_error:
           type: string
           description: Present when reading .runner failed
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Soft configuration advisories (request still succeeds)
         status:
           $ref: "#/components/schemas/RunnerStatus"
         running:
@@ -429,6 +434,11 @@ components:
         Optional persistent cache mount. Use the same volume_name (or host_path)
         on multiple runners to share a cache. Prefer named volumes on HAOS;
         bind mounts use Docker host paths (not paths inside the addon container).
+
+        Sibling Docker / Buildx type=local that reference the cache target as a
+        host path require a same-path bind (host_path equal to target, commonly
+        both /cache). A mismatched bind or a named volume is allowed but surfaces
+        soft warnings[] (sibling host binds will not see the cache).
       properties:
         enabled:
           type: boolean
@@ -441,7 +451,7 @@ components:
           description: Named volume; empty defaults to gha-runner-<name>-cache
         host_path:
           type: string
-          description: Absolute Docker host path when type=bind
+          description: Absolute Docker host path when type=bind (prefer equal to target for sibling Docker)
         target:
           type: string
           description: Container mount path (default /cache)

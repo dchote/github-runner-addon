@@ -4,6 +4,7 @@ import {
   parseExtraEnvText,
   buildRuntimePayload,
   cacheFromRunner,
+  cacheSiblingPathWarning,
   normalizeRunnerName,
   defaultWorkdirHostPath,
 } from './runnerConfig.js'
@@ -119,5 +120,44 @@ describe('runnerConfig', () => {
     expect(c.type).toBe('bind')
     expect(c.hostPath).toBe('/srv/cache')
     expect(c.readOnly).toBe(true)
+  })
+
+  it('warns when cache bind host path differs from target', () => {
+    expect(
+      cacheSiblingPathWarning({
+        enabled: true,
+        type: 'bind',
+        hostPath: '/cache',
+        target: '/cache',
+      }),
+    ).toBe('')
+    expect(
+      cacheSiblingPathWarning({
+        enabled: true,
+        type: 'bind',
+        hostPath: '/cache/',
+        target: '/cache',
+      }),
+    ).toBe('')
+    const msg = cacheSiblingPathWarning({
+      enabled: true,
+      type: 'bind',
+      hostPath: '/srv/runner-cache',
+      target: '/cache',
+    })
+    expect(msg).toMatch(/same-path/)
+    expect(msg).toContain('"/srv/runner-cache"')
+    expect(msg).toContain('"/cache"')
+  })
+
+  it('warns when cache uses a named volume (sibling host bind miss)', () => {
+    const msg = cacheSiblingPathWarning({
+      enabled: true,
+      type: 'volume',
+      hostPath: '',
+      target: '/cache',
+    })
+    expect(msg).toMatch(/named volume/)
+    expect(msg).toContain('"/cache"')
   })
 })

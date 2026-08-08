@@ -64,6 +64,43 @@ export function cacheFromRunner(runner) {
   }
 }
 
+/** Align with Go path.Clean for absolute cache paths (trailing slashes). */
+function cleanCachePath(p) {
+  let s = String(p || '').trim()
+  if (!s) return ''
+  while (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1)
+  return s
+}
+
+/**
+ * Soft advisory when cache mount will miss sibling Docker / Buildx type=local.
+ * Keep wording in sync with github_runner/internal/runner cacheSiblingWarnings (%q → JSON quotes).
+ */
+export function cacheSiblingPathWarning({
+  enabled = false,
+  type = 'volume',
+  hostPath = '',
+  target = '/cache',
+} = {}) {
+  if (!enabled) return ''
+  const tg = cleanCachePath(target) || '/cache'
+  if (type === 'volume') {
+    return (
+      `cache uses a named volume mounted at "${tg}"; sibling Docker and Buildx type=local ` +
+      `that bind-mount "${tg}" on the Docker host will not see this volume. Prefer a host bind ` +
+      `with host_path equal to target (commonly both /cache) when workflows need that.`
+    )
+  }
+  if (type !== 'bind') return ''
+  const hp = cleanCachePath(hostPath)
+  if (!hp || hp === tg) return ''
+  return (
+    `cache bind host_path "${hp}" differs from target "${tg}"; sibling Docker and Buildx type=local ` +
+    `that use "${tg}" on the Docker host will not see this bind unless the host also exposes that ` +
+    `same directory at "${tg}" (same-path rule). Prefer host_path equal to target (commonly both /cache).`
+  )
+}
+
 /** Build create/patch payload fields from shared form state. */
 export function buildRuntimePayload({
   labels,

@@ -29,10 +29,10 @@ Per-runner mounts (see [0003-persistent-runner-cache](../features/0003-persisten
 
 | Mount | When | Storage | Target | Notes |
 |-------|------|---------|--------|-------|
-| Cache | optional (`cache.enabled`) | Named volume or host bind | default `/cache` | Same `volume_name` / `host_path` across runners shares the cache |
+| Cache | optional (`cache.enabled`) | Named volume or host bind | default `/cache` | Same `volume_name` / `host_path` across runners shares the cache. For sibling Docker / Buildx `type=local` that use the target as a host path, prefer bind with `host_path` = `target` (commonly both `/cache`); mismatch surfaces soft `warnings[]` |
 | Workdir | **always** | Host directory | default `/srv/gha-work/<normalized-name>` (same-path bind) | `RUNNER_WORKDIR` + agent `workFolder` must match; not a Docker volume `_data` path |
 
-Prefer **named volumes** for cache on Home Assistant OS. Workdir and cache host binds use **Docker host** paths (not addon `/data` or `/share`).
+Prefer **named volumes** for cache on Home Assistant OS when workflows do not need sibling host binds of the cache path. Workdir and cache host binds use **Docker host** paths (not addon `/data` or `/share`). See [0003](../features/0003-persistent-runner-cache.md) same-path cache rule.
 
 Before bind-mount, the manager `mkdir -p`s missing host dirs via a one-shot helper that bind-mounts the narrowest known root (`/srv`, `/mnt`, …) containing the path (not `/` unless necessary).
 

@@ -125,6 +125,34 @@ func validateCache(c *store.CacheConfig) error {
 	return nil
 }
 
+// Soft advisory copy (keep in sync with frontend cacheSiblingPathWarning).
+const (
+	cacheBindPathMismatchFmt = "cache bind host_path %q differs from target %q; sibling Docker and Buildx type=local that use %q on the Docker host will not see this bind unless the host also exposes that same directory at %q (same-path rule). Prefer host_path equal to target (commonly both /cache)."
+	cacheVolumeSiblingFmt    = "cache uses a named volume mounted at %q; sibling Docker and Buildx type=local that bind-mount %q on the Docker host will not see this volume. Prefer a host bind with host_path equal to target (commonly both /cache) when workflows need that."
+)
+
+// cacheSiblingWarnings returns soft operator warnings for cache mounts that will
+// confuse sibling Docker / Buildx when workflows use the cache target as a host path.
+// Never fails validation — mismatched binds and named volumes remain allowed.
+func cacheSiblingWarnings(c *store.CacheConfig) []string {
+	if c == nil || !c.Enabled {
+		return nil
+	}
+	target := path.Clean(cacheTarget(c))
+	switch cacheType(c) {
+	case "bind":
+		host := path.Clean(strings.TrimSpace(c.HostPath))
+		if host == "" || host == "." || host == target {
+			return nil
+		}
+		return []string{fmt.Sprintf(cacheBindPathMismatchFmt, host, target, target, target)}
+	case "volume":
+		return []string{fmt.Sprintf(cacheVolumeSiblingFmt, target, target)}
+	default:
+		return nil
+	}
+}
+
 func validateMountPath(p, label string) error {
 	p = strings.TrimSpace(p)
 	if p == "" || !strings.HasPrefix(p, "/") || p == "/" {

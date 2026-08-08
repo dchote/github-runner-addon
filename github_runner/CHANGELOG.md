@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.2
+
+- Soft advisories on runner API/UI as `warnings[]` (create/patch still succeed):
+  - cache **bind** with `host_path` ≠ `target` (sibling Docker / Buildx `type=local` miss)
+  - cache **named volume** (never visible to sibling host binds of the target path)
+- Docs/UI: same-path cache bind recipe (prefer `host_path` = mount path, commonly both `/cache`)
+- UI: selecting host-path cache prefills Host path from the mount path when empty; details use warning alerts
+
 ## 0.5.1
 
 - Register runners with a configure-only (`DEBUG_ONLY`) container, then start the long-running listener without `RUNNER_TOKEN` — avoids killing a live GitHub session to scrub the token (fixes “session already exists” races)

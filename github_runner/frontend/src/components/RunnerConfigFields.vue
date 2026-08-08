@@ -115,8 +115,9 @@
       @update:model-value="$emit('update:cacheEnabled', $event)"
     />
     <p class="text-body-small brand-text-muted mb-3">
-      Mount a durable cache (default /cache). Prefer a Docker volume on HAOS; use a host path for
-      dedicated disks. Same volume name or host path on multiple runners shares the cache.
+      Mount a durable cache (default /cache). Prefer a Docker volume on HAOS when workflows do not
+      need sibling Docker/Buildx host binds of that path; use a host path for dedicated disks and
+      sibling access. Same volume name or host path on multiple runners shares the cache.
     </p>
     <template v-if="cacheEnabled">
       <v-select
@@ -129,14 +130,14 @@
         hide-details="auto"
         style="max-width: 20rem"
         :disabled="disabled"
-        @update:model-value="$emit('update:cacheType', $event)"
+        @update:model-value="onCacheType"
       />
       <v-text-field
         v-if="cacheType === 'volume'"
         :model-value="cacheVolumeName"
         class="mb-4"
         label="Cache volume name (optional)"
-        hint="Empty uses gha-runner-<name>-cache; reuse the same name to share"
+        hint="Empty uses gha-runner-<name>-cache; reuse the same name to share. Named volumes are not visible to sibling host binds of the mount path."
         persistent-hint
         variant="outlined"
         density="comfortable"
@@ -150,7 +151,7 @@
         :model-value="cacheHostPath"
         class="mb-4"
         label="Host path"
-        hint="Absolute path on the Docker host (not paths inside the addon)"
+        hint="Docker host path. For sibling Docker/Buildx that use the mount path on the host, set this equal to Cache mount path (commonly both /cache)."
         persistent-hint
         variant="outlined"
         density="comfortable"
@@ -163,7 +164,7 @@
         :model-value="cacheTarget"
         class="mb-4"
         label="Cache mount path"
-        hint="Container path (default /cache)"
+        hint="Container path (default /cache). Prefer matching Host path for sibling Docker."
         persistent-hint
         variant="outlined"
         density="comfortable"
@@ -173,6 +174,15 @@
         :disabled="disabled"
         @update:model-value="$emit('update:cacheTarget', $event)"
       />
+      <v-alert
+        v-if="cachePathWarning"
+        class="mb-4"
+        type="warning"
+        variant="tonal"
+        density="comfortable"
+      >
+        {{ cachePathWarning }}
+      </v-alert>
       <v-switch
         :model-value="cacheReadOnly"
         class="mb-4"
@@ -212,7 +222,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { defaultWorkdirHostPath } from '@/utils/runnerConfig'
+import { cacheSiblingPathWarning, defaultWorkdirHostPath } from '@/utils/runnerConfig'
 
 const sockItems = [
   { title: 'Use global default', value: null },
@@ -244,13 +254,7 @@ const props = defineProps({
   disabled: { type: Boolean, default: false },
 })
 
-const workdirHint = computed(() => {
-  const n = String(props.runnerName || '').trim()
-  const example = n ? defaultWorkdirHostPath(n) : '/srv/gha-work/<normalized-name>'
-  return `Empty uses ${example} on the Docker host`
-})
-
-defineEmits([
+const emit = defineEmits([
   'update:labels',
   'update:image',
   'update:cpuLimit',
@@ -266,4 +270,26 @@ defineEmits([
   'update:cacheReadOnly',
   'update:workdirHostPath',
 ])
+
+const workdirHint = computed(() => {
+  const n = String(props.runnerName || '').trim()
+  const example = n ? defaultWorkdirHostPath(n) : '/srv/gha-work/<normalized-name>'
+  return `Empty uses ${example} on the Docker host`
+})
+
+const cachePathWarning = computed(() =>
+  cacheSiblingPathWarning({
+    enabled: props.cacheEnabled,
+    type: props.cacheType,
+    hostPath: props.cacheHostPath,
+    target: props.cacheTarget,
+  }),
+)
+
+function onCacheType(next) {
+  emit('update:cacheType', next)
+  if (next === 'bind' && !String(props.cacheHostPath || '').trim()) {
+    emit('update:cacheHostPath', String(props.cacheTarget || '').trim() || '/cache')
+  }
+}
 </script>

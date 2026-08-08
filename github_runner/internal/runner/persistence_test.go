@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -32,6 +33,65 @@ func TestValidateCacheBind(t *testing.T) {
 	c.HostPath = "/etc"
 	if err := validateCache(c); err == nil {
 		t.Fatal("expected forbidden path")
+	}
+}
+
+func TestCacheSiblingWarnings(t *testing.T) {
+	if got := cacheSiblingWarnings(nil); got != nil {
+		t.Fatalf("nil cache: %v", got)
+	}
+	same := &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/cache", Target: "/cache"}
+	if got := cacheSiblingWarnings(same); got != nil {
+		t.Fatalf("same-path bind should not warn: %v", got)
+	}
+	sameSlash := &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/cache/", Target: "/cache"}
+	if got := cacheSiblingWarnings(sameSlash); got != nil {
+		t.Fatalf("cleaned same-path should not warn: %v", got)
+	}
+	mismatch := &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/srv/runner-cache", Target: "/cache"}
+	got := cacheSiblingWarnings(mismatch)
+	if len(got) != 1 {
+		t.Fatalf("expected one warning, got %v", got)
+	}
+	if !strings.Contains(got[0], "/srv/runner-cache") || !strings.Contains(got[0], "same-path") {
+		t.Fatalf("unexpected warning text: %s", got[0])
+	}
+	vol := &store.CacheConfig{Enabled: true, Type: "volume", Target: "/cache"}
+	gotVol := cacheSiblingWarnings(vol)
+	if len(gotVol) != 1 || !strings.Contains(gotVol[0], "named volume") {
+		t.Fatalf("expected named-volume sibling warning, got %v", gotVol)
+	}
+}
+
+func TestEnrichAttachesCacheWarnings(t *testing.T) {
+	m := &Manager{}
+	rec := store.Runner{
+		Name: "lab",
+		Cache: &store.CacheConfig{
+			Enabled:  true,
+			Type:     "bind",
+			HostPath: "/srv/runner-cache",
+			Target:   "/cache",
+		},
+	}
+	v := m.enrich(context.Background(), rec, enrichOpts{})
+	if len(v.Warnings) != 1 {
+		t.Fatalf("expected one warning on View, got %v", v.Warnings)
+	}
+	if !strings.Contains(v.Warnings[0], "same-path") {
+		t.Fatalf("unexpected warning: %s", v.Warnings[0])
+	}
+
+	rec.Cache = &store.CacheConfig{Enabled: true, Type: "volume", Target: "/cache"}
+	v = m.enrich(context.Background(), rec, enrichOpts{})
+	if len(v.Warnings) != 1 || !strings.Contains(v.Warnings[0], "named volume") {
+		t.Fatalf("expected volume warning on View, got %v", v.Warnings)
+	}
+
+	rec.Cache = &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/cache", Target: "/cache"}
+	v = m.enrich(context.Background(), rec, enrichOpts{})
+	if len(v.Warnings) != 0 {
+		t.Fatalf("same-path bind should have no warnings, got %v", v.Warnings)
 	}
 }
 
