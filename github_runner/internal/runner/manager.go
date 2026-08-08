@@ -23,7 +23,8 @@ const (
 	// lifecycleOpTimeout bounds Create/Recreate Docker work on a detached context so
 	// client disconnect / ingress cancel cannot abort mid-pipeline (or after clearing .runner).
 	lifecycleOpTimeout = 9 * time.Minute
-	scrubOpTimeout     = 3 * time.Minute
+	// detachedOpTimeout bounds shorter detached Docker ops (rollback, configure container swap).
+	detachedOpTimeout = 3 * time.Minute
 )
 
 func lifecycleContext() (context.Context, context.CancelFunc) {
@@ -39,6 +40,7 @@ var managedEnvKeys = map[string]struct{}{
 	"RUNNER_WORKDIR":                      {},
 	"DISABLE_AUTO_UPDATE":                 {},
 	"DISABLE_AUTOMATIC_DEREGISTRATION":    {},
+	"DEBUG_ONLY":                          {},
 	"ORG_NAME":                            {},
 	"REPO_URL":                            {},
 	"ACCESS_TOKEN":                        {},
@@ -49,11 +51,18 @@ var managedEnvKeys = map[string]struct{}{
 	"ACTIONS_RUNNER_HOOK_JOB_COMPLETED":   {},
 }
 
-var registrationSuccessMarkers = []string{
-	"Listening for Jobs",
-	"Connected to GitHub",
+// configureSuccessMarkers indicate myoung34 config.sh finished (DEBUG_ONLY path).
+// Prefer confirming .runner on the volume; these are secondary log signals.
+var configureSuccessMarkers = []string{
+	"Settings Saved",
 	"Runner successfully added",
-	"√ Connected to GitHub",
+	"√ Settings Saved",
+}
+
+// listenSuccessMarkers indicate the runner listener is online (tokenless run phase).
+// Do not treat "Connected to GitHub" alone as success — that can precede a session conflict.
+var listenSuccessMarkers = []string{
+	"Listening for Jobs",
 	"√ Listening for Jobs",
 }
 
@@ -65,6 +74,9 @@ var registrationFailureMarkers = []string{
 	"Error: Http status code: 401",
 	"Error: Http status code: 403",
 	"Failed to configure",
+	"A session for this runner already exists",
+	"SessionConflictException",
+	"Stop retry on SessionConflictException",
 }
 
 // Manager orchestrates expected config + Docker lifecycle.
@@ -469,7 +481,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 	// Detached lifecycle: client disconnect must not abort after the store row exists.
 	dctx, cancel := lifecycleContext()
 	defer cancel()
-	if err := m.startContainer(dctx, rec, token, info.OrgName(), true); err != nil {
+	if err := m.startContainer(dctx, rec, token, info.OrgName()); err != nil {
 		return m.rollbackFailedCreate(rec, err)
 	}
 	return m.Get(dctx, id)
@@ -480,7 +492,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 // container is already present with our managed labels, keep the store row for
 // operator recovery but still return createErr (fail closed — never soft-success).
 func (m *Manager) rollbackFailedCreate(rec store.Runner, createErr error) (View, error) {
-	dctx, cancel := docker.DetachedTimeout(scrubOpTimeout)
+	dctx, cancel := docker.DetachedTimeout(detachedOpTimeout)
 	defer cancel()
 
 	info, inspErr := m.Docker.InspectByName(dctx, rec.ContainerName)
@@ -529,25 +541,50 @@ func (m *Manager) removeLegacyWorkVolume(ctx context.Context, rec store.Runner) 
 	}
 }
 
-func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, orgName string, waitRegister bool) error {
-	if err := m.startContainerWithoutVerify(ctx, rec, token, orgName); err != nil {
-		return err
-	}
-	if waitRegister && token != "" {
-		confirmed, err := m.waitForRegistration(ctx, rec.ContainerName)
-		if err != nil {
+// startContainer starts the runner container. When token is non-empty it runs a
+// configure-only phase (DEBUG_ONLY) then a tokenless long-running container so
+// docker inspect never retains RUNNER_TOKEN and we never kill a live GitHub session
+// to scrub it. When token is empty, registration files on the volume are reused.
+func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, orgName string) error {
+	if token != "" {
+		if err := m.configureThenRun(ctx, rec, token, orgName); err != nil {
 			return err
 		}
-		if confirmed {
-			if scrubErr := m.scrubToken(ctx, rec, orgName); scrubErr != nil {
-				slog.Warn("token scrub failed", "runner", rec.ID, "err", scrubErr)
-			}
-		} else {
-			slog.Warn("registration not confirmed in logs; leaving RUNNER_TOKEN until next recreate", "runner", rec.ID)
-		}
+		return m.verifyAgentWorkdir(ctx, rec)
 	}
-	// Fail closed: agent workFolder must match the host bind after start/configure.
+	if err := m.startContainerWithoutVerify(ctx, rec, "", orgName, false); err != nil {
+		return err
+	}
 	return m.verifyAgentWorkdir(ctx, rec)
+}
+
+// configureThenRun registers via a one-shot DEBUG_ONLY container, then starts the
+// listener without RUNNER_TOKEN. Avoids the old scrubToken stop/start race that
+// produced "A session for this runner already exists".
+func (m *Manager) configureThenRun(ctx context.Context, rec store.Runner, token, orgName string) error {
+	if err := m.startContainerWithoutVerify(ctx, rec, token, orgName, true); err != nil {
+		return fmt.Errorf("configure runner: %w", err)
+	}
+	if err := m.waitForConfigure(ctx, rec); err != nil {
+		dctx, cancel := docker.DetachedTimeout(detachedOpTimeout)
+		_ = m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, 10)
+		cancel()
+		return err
+	}
+	dctx, cancel := docker.DetachedTimeout(detachedOpTimeout)
+	defer cancel()
+	if err := m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, 30); err != nil {
+		return fmt.Errorf("remove configure container: %w", err)
+	}
+	if err := m.startContainerWithoutVerify(ctx, rec, "", orgName, false); err != nil {
+		return fmt.Errorf("start runner: %w", err)
+	}
+	if confirmed, err := m.waitForListening(ctx, rec.ContainerName); err != nil {
+		return err
+	} else if !confirmed {
+		slog.Warn("listen wait timed out without success markers; container still running", "runner", rec.ID)
+	}
+	return nil
 }
 
 func (m *Manager) ensurePersistenceHostDirs(ctx context.Context, rec store.Runner, workdirBind string) error {
@@ -571,7 +608,7 @@ func (m *Manager) ensurePersistenceHostDirs(ctx context.Context, rec store.Runne
 	return nil
 }
 
-func (m *Manager) startContainerWithoutVerify(ctx context.Context, rec store.Runner, token, orgName string) error {
+func (m *Manager) startContainerWithoutVerify(ctx context.Context, rec store.Runner, token, orgName string, configureOnly bool) error {
 	workdirBind := resolveWorkdirHostPath(rec)
 	if err := validateWorkdirHostPath(workdirBind); err != nil {
 		return err
@@ -579,13 +616,21 @@ func (m *Manager) startContainerWithoutVerify(ctx context.Context, rec store.Run
 	if err := m.ensurePersistenceHostDirs(ctx, rec, workdirBind); err != nil {
 		return err
 	}
-	env := m.buildEnv(rec, token, orgName, workdirBind)
+	env := m.buildEnv(rec, token, orgName, workdirBind, configureOnly)
 	mountSock := m.MountDockerSock
 	if rec.MountDockerSock != nil {
 		mountSock = *rec.MountDockerSock
 	}
 	extra := buildExtraMounts(rec, workdirBind)
-	stopSecs := StopTimeoutSecs
+	restart := "unless-stopped"
+	var stopSecs *int
+	if configureOnly {
+		// One-shot configure: must not restart-loop after entrypoint exits.
+		restart = "no"
+	} else {
+		s := StopTimeoutSecs
+		stopSecs = &s
+	}
 	_, err := m.Docker.CreateAndStart(ctx, docker.CreateOpts{
 		Name:  rec.ContainerName,
 		Image: rec.Image,
@@ -598,8 +643,8 @@ func (m *Manager) startContainerWithoutVerify(ctx context.Context, rec store.Run
 		VolumeTarget:    configFilesDir,
 		ExtraMounts:     extra,
 		MountDockerSock: mountSock,
-		RestartPolicy:   "unless-stopped",
-		StopTimeout:     &stopSecs,
+		RestartPolicy:   restart,
+		StopTimeout:     stopSecs,
 		CPULimit:        rec.CPULimit,
 		MemoryLimitMB:   rec.MemoryLimitMB,
 		NetworkMode:     rec.NetworkMode,
@@ -651,7 +696,7 @@ func (m *Manager) verifyAgentWorkdir(_ context.Context, rec store.Runner) error 
 	}
 }
 
-func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string) []string {
+func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string, configureOnly bool) []string {
 	env := []string{
 		"RUNNER_NAME=" + rec.Name,
 		"LABELS=" + strings.Join(rec.Labels, ","),
@@ -662,6 +707,9 @@ func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string) []s
 		"DISABLE_AUTOMATIC_DEREGISTRATION=true",
 		"ACTIONS_RUNNER_HOOK_JOB_STARTED=" + jobStartedHookPath(workdir),
 		"ACTIONS_RUNNER_HOOK_JOB_COMPLETED=" + jobCompletedHookPath(workdir),
+	}
+	if configureOnly {
+		env = append(env, "DEBUG_ONLY=true")
 	}
 	if token != "" {
 		env = append(env, "RUNNER_TOKEN="+token)
@@ -682,21 +730,79 @@ func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string) []s
 	return env
 }
 
-// waitForRegistration returns (confirmed, err). confirmed means success markers were seen
-// (safe to scrub token). Soft timeout while still running returns (false, nil).
-func (m *Manager) waitForRegistration(ctx context.Context, containerName string) (bool, error) {
+// waitForConfigure waits until the configure-only container wrote .runner (or log
+// success markers). Exited without .runner is a hard failure. Soft client cancel
+// succeeds only if .runner is already present.
+func (m *Manager) waitForConfigure(ctx context.Context, rec store.Runner) error {
 	deadline := time.Now().Add(90 * time.Second)
 	var last string
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			// Request canceled/timed out after the container started: do not fail
-			// hard if the runner is still up — treat like a soft timeout.
+			dctx, cancel := docker.DetachedContext()
+			ok := m.agentConfigured(dctx, rec.VolumeName)
+			cancel()
+			if ok {
+				return nil
+			}
+			return fmt.Errorf("%w: configure interrupted before .runner was written: %v", ErrValidation, ctx.Err())
+		default:
+		}
+		if m.agentConfigured(ctx, rec.VolumeName) {
+			return nil
+		}
+		logs, err := m.Docker.TailLogs(ctx, rec.ContainerName, "80")
+		if err == nil {
+			last = logs
+			if err := registrationLogFailure(logs); err != nil {
+				return err
+			}
+			for _, marker := range configureSuccessMarkers {
+				if strings.Contains(logs, marker) && m.agentConfigured(ctx, rec.VolumeName) {
+					return nil
+				}
+			}
+		}
+		info, err := m.Docker.InspectByName(ctx, rec.ContainerName)
+		if err == nil && info.Exists && !info.Running && info.Status == "exited" {
+			if m.agentConfigured(ctx, rec.VolumeName) {
+				return nil
+			}
+			logs, _ := m.Docker.TailLogs(ctx, rec.ContainerName, "80")
+			if err := registrationLogFailure(logs); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: configure container exited without writing .runner: %s", ErrValidation, summarizeLogs(logs))
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if m.agentConfigured(ctx, rec.VolumeName) {
+		return nil
+	}
+	if last != "" {
+		return fmt.Errorf("%w: timed out waiting for runner configure: %s", ErrValidation, summarizeLogs(last))
+	}
+	return fmt.Errorf("%w: timed out waiting for runner configure", ErrValidation)
+}
+
+func (m *Manager) agentConfigured(ctx context.Context, volumeName string) bool {
+	wf, err := m.readAgentWorkFolder(ctx, volumeName, true)
+	return err == nil && strings.TrimSpace(wf) != ""
+}
+
+// waitForListening returns (confirmed, err). confirmed means listen success markers
+// were seen. Soft timeout while still running returns (false, nil).
+func (m *Manager) waitForListening(ctx context.Context, containerName string) (bool, error) {
+	deadline := time.Now().Add(90 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
 			dctx, cancel := docker.DetachedContext()
 			info, err := m.Docker.InspectByName(dctx, containerName)
 			cancel()
 			if err == nil && info.Exists && info.Running {
-				slog.Warn("registration wait interrupted; container still running",
+				slog.Warn("listen wait interrupted; container still running",
 					"container", containerName, "err", ctx.Err())
 				return false, nil
 			}
@@ -706,18 +812,18 @@ func (m *Manager) waitForRegistration(ctx context.Context, containerName string)
 		info, err := m.Docker.InspectByName(ctx, containerName)
 		if err == nil && info.Exists && !info.Running && info.Status == "exited" {
 			logs, _ := m.Docker.TailLogs(ctx, containerName, "80")
-			return false, fmt.Errorf("%w: runner container exited during registration: %s", ErrValidation, summarizeLogs(logs))
+			if failErr := registrationLogFailure(logs); failErr != nil {
+				return false, failErr
+			}
+			return false, fmt.Errorf("%w: runner container exited during startup: %s", ErrValidation, summarizeLogs(logs))
 		}
 		logs, err := m.Docker.TailLogs(ctx, containerName, "80")
 		if err == nil {
 			last = logs
-			lower := strings.ToLower(logs)
-			for _, marker := range registrationFailureMarkers {
-				if strings.Contains(lower, strings.ToLower(marker)) {
-					return false, fmt.Errorf("%w: registration failed: %s", ErrValidation, summarizeLogs(logs))
-				}
+			if failErr := registrationLogFailure(logs); failErr != nil {
+				return false, failErr
 			}
-			for _, marker := range registrationSuccessMarkers {
+			for _, marker := range listenSuccessMarkers {
 				if strings.Contains(logs, marker) {
 					return true, nil
 				}
@@ -727,13 +833,23 @@ func (m *Manager) waitForRegistration(ctx context.Context, containerName string)
 	}
 	info, err := m.Docker.InspectByName(ctx, containerName)
 	if err == nil && info.Exists && info.Running {
-		slog.Warn("registration wait timed out without success markers; container still running", "container", containerName, "tail", summarizeLogs(last))
+		slog.Warn("listen wait timed out without success markers; container still running", "container", containerName, "tail", summarizeLogs(last))
 		return false, nil
 	}
 	if last != "" {
-		return false, fmt.Errorf("%w: timed out waiting for GitHub registration: %s", ErrValidation, summarizeLogs(last))
+		return false, fmt.Errorf("%w: timed out waiting for runner to listen: %s", ErrValidation, summarizeLogs(last))
 	}
-	return false, fmt.Errorf("%w: timed out waiting for GitHub registration", ErrValidation)
+	return false, fmt.Errorf("%w: timed out waiting for runner to listen", ErrValidation)
+}
+
+func registrationLogFailure(logs string) error {
+	lower := strings.ToLower(logs)
+	for _, marker := range registrationFailureMarkers {
+		if strings.Contains(lower, strings.ToLower(marker)) {
+			return fmt.Errorf("%w: registration failed: %s", ErrValidation, summarizeLogs(logs))
+		}
+	}
+	return nil
 }
 
 func summarizeLogs(logs string) string {
@@ -750,28 +866,6 @@ func summarizeLogs(logs string) string {
 		return msg[len(msg)-400:]
 	}
 	return msg
-}
-
-// scrubToken recreates the container without RUNNER_TOKEN so docker inspect cannot retain it.
-// Uses startContainerWithoutVerify to avoid nested verify before the outer startContainer finishes.
-// Runs on a detached deadline so a canceled parent cannot leave the runner removed mid-scrub.
-func (m *Manager) scrubToken(_ context.Context, rec store.Runner, orgName string) error {
-	dctx, cancel := docker.DetachedTimeout(scrubOpTimeout)
-	defer cancel()
-	if err := m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, StopTimeoutSecs); err != nil {
-		return err
-	}
-	if err := m.startContainerWithoutVerify(dctx, rec, "", orgName); err != nil {
-		return err
-	}
-	info, err := m.Docker.InspectByName(dctx, rec.ContainerName)
-	if err != nil {
-		return err
-	}
-	if docker.EnvHasKey(info.Env, "RUNNER_TOKEN") {
-		return fmt.Errorf("RUNNER_TOKEN still present after scrub")
-	}
-	return nil
 }
 
 func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View, error) {
@@ -915,19 +1009,16 @@ func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) 
 		slog.Info("recreate: workdir reconfigure required", "reason", plan.Reason, "desired", desiredWork, "agent", agentWF)
 	}
 
-	token := strings.TrimSpace(req.Token)
-	if plan.Needs {
-		var resolveErr error
-		token, resolveErr = m.resolveRegistrationToken(dctx, rec.URL, token)
-		if resolveErr != nil {
-			return View{}, fmt.Errorf("%w: changing or fixing workdir requires reconfigure — provide a registration token or configure GITHUB_PAT (agent workFolder is set only at configure time)", ErrValidation)
+	// Only inject a registration token when reconfigure is required. Reusing an
+	// existing .runner with a fresh token forced a configure/listen/scrub cycle that
+	// raced GitHub sessions ("A session for this runner already exists").
+	token, resolveErr := m.resolveRecreateToken(dctx, rec.URL, req.Token, plan.Needs)
+	if resolveErr != nil {
+		reason := plan.Reason
+		if reason == "" {
+			reason = "reconfigure required"
 		}
-	} else if token == "" && m.PATConfigured() {
-		if minted, err := m.GitHub.MintRegistrationToken(dctx, rec.URL); err != nil {
-			slog.Warn("recreate: optional mint failed; reusing volume registration", "err", err)
-		} else {
-			token = minted
-		}
+		return View{}, fmt.Errorf("%w: %s — provide a registration token or configure GITHUB_PAT (agent workFolder is set only at configure time)", ErrValidation, reason)
 	}
 
 	// Stop the old container before clearing .runner so a failed remove cannot leave
@@ -943,11 +1034,19 @@ func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) 
 		}
 	}
 	m.removeLegacyWorkVolume(dctx, rec)
-	wait := token != ""
-	if err := m.startContainer(dctx, rec, token, info.OrgName(), wait); err != nil {
+	if err := m.startContainer(dctx, rec, token, info.OrgName()); err != nil {
 		return View{}, err
 	}
 	return m.Get(dctx, id)
+}
+
+// resolveRecreateToken returns a registration token only when reconfigure is needed.
+// Otherwise returns empty so recreate reuses volume credentials without DEBUG_ONLY configure.
+func (m *Manager) resolveRecreateToken(ctx context.Context, projectURL, reqToken string, needsReconfigure bool) (string, error) {
+	if !needsReconfigure {
+		return "", nil
+	}
+	return m.resolveRegistrationToken(ctx, projectURL, reqToken)
 }
 
 func (m *Manager) applyLifecycle(ctx context.Context, id string, op func(context.Context, string) error) (View, error) {

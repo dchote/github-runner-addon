@@ -1,11 +1,14 @@
 package runner
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/dchote/github-runner-addon/internal/container/docker"
 	"github.com/dchote/github-runner-addon/internal/github"
+	"github.com/dchote/github-runner-addon/internal/store"
 )
 
 func TestValidateExtraEnv(t *testing.T) {
@@ -103,5 +106,61 @@ func TestEnvHasKey(t *testing.T) {
 	}
 	if docker.EnvHasKey(env, "MISSING") {
 		t.Fatal("unexpected key")
+	}
+}
+
+func TestResolveRecreateTokenSkipsWhenNoReconfigure(t *testing.T) {
+	m := &Manager{}
+	tok, err := m.resolveRecreateToken(context.Background(), "https://github.com/a/b", "ignored", false)
+	if err != nil || tok != "" {
+		t.Fatalf("tok=%q err=%v", tok, err)
+	}
+}
+
+func TestResolveRecreateTokenRequiresWhenReconfigure(t *testing.T) {
+	m := &Manager{}
+	_, err := m.resolveRecreateToken(context.Background(), "https://github.com/a/b", "", true)
+	if err == nil {
+		t.Fatal("expected error without PAT or token")
+	}
+	tok, err := m.resolveRecreateToken(context.Background(), "https://github.com/a/b", "reg-token", true)
+	if err != nil || tok != "reg-token" {
+		t.Fatalf("tok=%q err=%v", tok, err)
+	}
+}
+
+func TestBuildEnvConfigureOnly(t *testing.T) {
+	m := &Manager{}
+	rec := store.Runner{Name: "n", Scope: "repo", URL: "https://github.com/a/b", Labels: []string{"self-hosted"}}
+	runEnv := m.buildEnv(rec, "", "", "/srv/gha-work/n", false)
+	if docker.EnvHasKey(runEnv, "DEBUG_ONLY") {
+		t.Fatal("run phase must not set DEBUG_ONLY")
+	}
+	if docker.EnvHasKey(runEnv, "RUNNER_TOKEN") {
+		t.Fatal("run phase must not set RUNNER_TOKEN when empty")
+	}
+	cfgEnv := m.buildEnv(rec, "tok", "", "/srv/gha-work/n", true)
+	joined := strings.Join(cfgEnv, "\n")
+	if !strings.Contains(joined, "DEBUG_ONLY=true") {
+		t.Fatal(joined)
+	}
+	if !strings.Contains(joined, "RUNNER_TOKEN=tok") {
+		t.Fatal(joined)
+	}
+}
+
+func TestRegistrationLogFailureSessionConflict(t *testing.T) {
+	err := registrationLogFailure("√ Connected to GitHub\nA session for this runner already exists.\n")
+	if err == nil {
+		t.Fatal("expected session conflict failure")
+	}
+	if err := registrationLogFailure("√ Listening for Jobs"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateExtraEnvBlocksDebugOnly(t *testing.T) {
+	if err := validateExtraEnv(map[string]string{"DEBUG_ONLY": "true"}); err == nil {
+		t.Fatal("expected reserved key error")
 	}
 }

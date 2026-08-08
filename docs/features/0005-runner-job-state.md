@@ -33,7 +33,7 @@ No image fork; no PAT; no job history store.
 | `job_state` | `idle` \| `busy` \| `unknown` when container is running; omitted when not |
 | `current_job` | Present only when `job_state=busy` |
 
-**UI:** Status column shows `idle` / `busy` / `unknown` when the container is running; otherwise shows container status. Details keep container status and add a Current job block when busy. Summary chips remain lifecycle counts (optional Busy count).
+**UI:** Status column shows `idle` / `busy` / `unknown` when the container is running; otherwise shows container status. Details keep container status and add a Current job block when busy. Summary chips remain lifecycle counts (optional Busy count). While `job_state=busy`, the UI disables **Edit**, **Delete**, and **Recreate** (start/stop/restart/logs stay available). This is operator UX only — the REST API does not reject those actions for busy runners. Dialogs already open may still be confirmed.
 
 ## Stale busy
 
@@ -56,6 +56,7 @@ No image fork; no PAT; no job history store.
 - Forking `myoung34/github-runner`
 - Historical job list in the UI
 - `Runner.Worker` process checks / `_diag` log scraping as primary signal
+- API-level rejection of edit/delete/recreate while busy (UI gating only)
 
 ## Related
 

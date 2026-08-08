@@ -90,7 +90,7 @@ func TestStopTimeoutSecs(t *testing.T) {
 
 func TestBuildEnvWorkdir(t *testing.T) {
 	m := &Manager{}
-	env := m.buildEnv(store.Runner{Name: "n", Scope: "repo", URL: "https://github.com/a/b", Labels: []string{"self-hosted"}}, "", "", "/srv/gha-work/n")
+	env := m.buildEnv(store.Runner{Name: "n", Scope: "repo", URL: "https://github.com/a/b", Labels: []string{"self-hosted"}}, "", "", "/srv/gha-work/n", false)
 	if !strings.Contains(strings.Join(env, "\n"), "RUNNER_WORKDIR=/srv/gha-work/n") {
 		t.Fatal(env)
 	}

@@ -4,8 +4,8 @@
     title="Edit runner"
     :fullscreen="mobile"
     max-width="560"
-    :persistent="submitting"
-    :close-disabled="submitting"
+    :persistent="!!submittingAction"
+    :close-disabled="!!submittingAction"
     @update:model-value="$emit('update:modelValue', $event)"
   >
     <v-alert
@@ -22,7 +22,7 @@
       container. If the agent workdir does not match the host bind, apply clears
       <code>.runner</code> and reconfigures (token or PAT required).
     </p>
-    <v-form ref="form" @submit.prevent="submit(false)">
+    <v-form ref="form" @submit.prevent="onFormSubmit">
       <p class="text-body-medium mb-4">
         <strong>{{ runner?.name }}</strong>
         <span class="brand-text-muted"> — {{ runner?.url }}</span>
@@ -43,7 +43,7 @@
         v-model:cache-read-only="cacheReadOnly"
         v-model:workdir-host-path="workdirHostPath"
         :runner-name="runner?.name || ''"
-        :disabled="submitting"
+        :disabled="!!submittingAction"
       />
       <v-switch
         v-model="apply"
@@ -52,7 +52,7 @@
         density="comfortable"
         hide-details
         label="Apply now (recreate container)"
-        :disabled="submitting"
+        :disabled="!!submittingAction"
       />
       <v-text-field
         v-if="apply && !patConfigured"
@@ -61,18 +61,30 @@
         label="Registration token (if volume missing or workdir reconfigure needed)"
         type="password"
         autocomplete="off"
-        :disabled="submitting"
+        :disabled="!!submittingAction"
       />
     </v-form>
 
     <template #actions>
-      <v-btn color="primary" variant="tonal" :disabled="submitting" @click="close">
+      <v-btn color="primary" variant="tonal" :disabled="!!submittingAction" @click="close">
         Cancel
       </v-btn>
-      <v-btn color="primary" variant="tonal" :loading="submitting" @click="submit(false)">
+      <v-btn
+        color="primary"
+        variant="tonal"
+        :loading="submittingAction === 'save'"
+        :disabled="apply || (!!submittingAction && submittingAction !== 'save')"
+        @click="submit(false)"
+      >
         Save
       </v-btn>
-      <v-btn color="primary" variant="elevated" :loading="submitting" @click="submit(true)">
+      <v-btn
+        color="primary"
+        variant="elevated"
+        :loading="submittingAction === 'apply'"
+        :disabled="!!submittingAction && submittingAction !== 'apply'"
+        @click="submit(true)"
+      >
         Save &amp; apply
       </v-btn>
     </template>
@@ -113,7 +125,7 @@ const cacheReadOnly = ref(false)
 const workdirHostPath = ref('')
 const apply = ref(false)
 const token = ref('')
-const submitting = ref(false)
+const submittingAction = ref(null)
 const error = ref('')
 
 const open = computed(() => props.modelValue)
@@ -145,14 +157,21 @@ watch(open, (v) => {
 })
 
 function close() {
-  if (!submitting.value) emit('update:modelValue', false)
+  if (!submittingAction.value) emit('update:modelValue', false)
+}
+
+function onFormSubmit() {
+  // Apply toggle disables Save; Enter should match the available primary action.
+  submit(!!apply.value)
 }
 
 async function submit(forceApply) {
   error.value = ''
-  if (!props.runner?.id) return
-  const shouldApply = forceApply || apply.value
-  submitting.value = true
+  if (!props.runner?.id || submittingAction.value) return
+  // Save is disabled when apply toggle is on — do not apply via the Save path.
+  if (!forceApply && apply.value) return
+  const shouldApply = !!forceApply
+  submittingAction.value = shouldApply ? 'apply' : 'save'
   try {
     const runtime = buildRuntimePayload({
       labels: labelChips.value,
@@ -192,7 +211,7 @@ async function submit(forceApply) {
   } catch (e) {
     error.value = e.message || String(e)
   } finally {
-    submitting.value = false
+    submittingAction.value = null
   }
 }
 </script>

@@ -21,7 +21,7 @@ Managed containers carry:
 
 Each runner gets a named volume mounted at the path set in `CONFIGURED_ACTIONS_RUNNER_FILES_DIR` so registration survives container recreate. When that dir is set, the image also requires `DISABLE_AUTOMATIC_DEREGISTRATION=true` or its entrypoint exits 1 after registration.
 
-After a successful first registration, the manager recreates the container **without** `RUNNER_TOKEN` in env (credentials remain on the volume) so `docker inspect` does not retain the short-lived token.
+Registration uses a two-phase start: a one-shot container with `RUNNER_TOKEN` and `DEBUG_ONLY=true` (configure only, no listener), then a long-running container **without** `RUNNER_TOKEN` so `docker inspect` never retains the short-lived token and a live GitHub session is never killed to scrub it. Recreate that only refreshes env/mounts reuses volume credentials and skips configure.
 
 ### Persistent cache and workdir
 

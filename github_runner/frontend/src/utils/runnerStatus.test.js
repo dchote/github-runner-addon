@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countByStatus, displayStatus, statusColor } from './runnerStatus.js'
+import { countByStatus, displayStatus, isRunnerBusy, statusColor } from './runnerStatus.js'
 
 describe('runnerStatus', () => {
   it('maps status colors', () => {
@@ -27,5 +27,12 @@ describe('runnerStatus', () => {
     expect(displayStatus({ status: 'running', running: true })).toBe('unknown')
     expect(displayStatus({ status: 'exited', running: false })).toBe('exited')
     expect(displayStatus({ status: 'missing' })).toBe('missing')
+  })
+
+  it('isRunnerBusy is true only for job_state busy', () => {
+    expect(isRunnerBusy({ job_state: 'busy' })).toBe(true)
+    expect(isRunnerBusy({ job_state: 'idle' })).toBe(false)
+    expect(isRunnerBusy({ job_state: 'unknown' })).toBe(false)
+    expect(isRunnerBusy(null)).toBe(false)
   })
 })

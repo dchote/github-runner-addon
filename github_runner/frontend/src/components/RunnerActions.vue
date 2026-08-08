@@ -6,7 +6,8 @@
       variant="elevated"
       size="small"
       prepend-icon="mdi-play"
-      :loading="loading"
+      :loading="loadingAction === 'start'"
+      :disabled="locked && loadingAction !== 'start'"
       @click="$emit('start')"
     >
       Start
@@ -17,7 +18,8 @@
       variant="elevated"
       size="small"
       prepend-icon="mdi-stop"
-      :loading="loading"
+      :loading="loadingAction === 'stop'"
+      :disabled="locked && loadingAction !== 'stop'"
       @click="$emit('stop')"
     >
       Stop
@@ -28,7 +30,8 @@
       variant="tonal"
       size="small"
       prepend-icon="mdi-restart"
-      :loading="loading"
+      :loading="loadingAction === 'restart'"
+      :disabled="locked && loadingAction !== 'restart'"
       @click="$emit('restart')"
     >
       Restart
@@ -38,7 +41,9 @@
       variant="tonal"
       size="small"
       prepend-icon="mdi-reload"
-      :loading="loading"
+      :loading="loadingAction === 'recreate'"
+      :disabled="busy || (locked && loadingAction !== 'recreate')"
+      :aria-label="busy ? 'Recreate runner (busy)' : 'Recreate runner'"
       @click="$emit('recreate')"
     >
       Recreate
@@ -48,6 +53,7 @@
       :variant="primaryLifecycle ? 'tonal' : 'elevated'"
       size="small"
       prepend-icon="mdi-console"
+      :disabled="locked"
       @click="$emit('logs')"
     >
       Logs
@@ -60,10 +66,13 @@ import { computed } from 'vue'
 
 const props = defineProps({
   runner: { type: Object, required: true },
-  loading: { type: Boolean, default: false },
+  loadingAction: { type: String, default: null },
+  busy: { type: Boolean, default: false },
 })
 
 defineEmits(['start', 'stop', 'restart', 'recreate', 'logs'])
+
+const locked = computed(() => !!props.loadingAction)
 
 const canStart = computed(
   () => props.runner && !props.runner.running && props.runner.status !== 'missing',

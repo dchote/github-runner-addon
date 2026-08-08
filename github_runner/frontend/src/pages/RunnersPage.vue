@@ -131,9 +131,10 @@
               <RunnerDetailsHeader
                 :name="selected.name"
                 card-title
-                :loading="actionLoading"
-                @edit="editOpen = true"
-                @delete="deleteOpen = true"
+                :loading-action="actionLoading"
+                :busy="selectedBusy"
+                @edit="openEdit"
+                @delete="openDelete"
               />
             </div>
             <div class="pa-4">
@@ -142,10 +143,11 @@
             <div class="standard-card-actions pa-4">
               <RunnerActions
                 :runner="selected"
-                :loading="actionLoading"
-                @start="runAction('startRunner')"
-                @stop="runAction('stopRunner')"
-                @restart="runAction('restartRunner')"
+                :loading-action="actionLoading"
+                :busy="selectedBusy"
+                @start="runAction('start')"
+                @stop="runAction('stop')"
+                @restart="runAction('restart')"
                 @recreate="openRecreate"
                 @logs="openLogs"
               />
@@ -168,9 +170,10 @@
       <template v-if="selected" #header>
         <RunnerDetailsHeader
           :name="selected.name"
-          :loading="actionLoading"
-          @edit="editOpen = true"
-          @delete="deleteOpen = true"
+          :loading-action="actionLoading"
+          :busy="selectedBusy"
+          @edit="openEdit"
+          @delete="openDelete"
         />
       </template>
       <RunnerDetails v-if="selected" :runner="selected" />
@@ -178,10 +181,11 @@
         <RunnerActions
           v-if="selected"
           :runner="selected"
-          :loading="actionLoading"
-          @start="runAction('startRunner')"
-          @stop="runAction('stopRunner')"
-          @restart="runAction('restartRunner')"
+          :loading-action="actionLoading"
+          :busy="selectedBusy"
+          @start="runAction('start')"
+          @stop="runAction('stop')"
+          @restart="runAction('restart')"
           @recreate="openRecreate"
           @logs="openLogs"
         />
@@ -199,12 +203,20 @@
         </template>
       </p>
       <template #actions>
-        <v-btn color="primary" variant="tonal" @click="deleteOpen = false">Cancel</v-btn>
+        <v-btn
+          color="primary"
+          variant="tonal"
+          :disabled="!!actionLoading"
+          @click="deleteOpen = false"
+        >
+          Cancel
+        </v-btn>
         <v-btn
           color="error"
           variant="elevated"
           prepend-icon="mdi-delete"
-          :loading="actionLoading"
+          :loading="actionLoading === 'delete'"
+          :disabled="!!actionLoading && actionLoading !== 'delete'"
           @click="confirmDelete"
         >
           Delete
@@ -223,17 +235,26 @@
         label="Registration token (required if data volume is missing)"
         type="password"
         autocomplete="off"
+        :disabled="!!actionLoading"
       />
       <v-alert v-else type="info" variant="tonal" density="comfortable">
         A PAT is configured — a registration token will be minted when the volume cannot be reused.
       </v-alert>
       <template #actions>
-        <v-btn color="primary" variant="tonal" @click="recreateOpen = false">Cancel</v-btn>
+        <v-btn
+          color="primary"
+          variant="tonal"
+          :disabled="!!actionLoading"
+          @click="recreateOpen = false"
+        >
+          Cancel
+        </v-btn>
         <v-btn
           color="primary"
           variant="elevated"
           prepend-icon="mdi-reload"
-          :loading="actionLoading"
+          :loading="actionLoading === 'recreate'"
+          :disabled="!!actionLoading && actionLoading !== 'recreate'"
           @click="confirmRecreate"
         >
           Recreate
@@ -260,7 +281,13 @@ import RunnerDetailsHeader from '@/components/RunnerDetailsHeader.vue'
 import RunnerActions from '@/components/RunnerActions.vue'
 import RunnerLogsDialog from '@/components/RunnerLogsDialog.vue'
 import { useListDetailsPane } from '@/composables/useListDetailsPane'
-import { countByStatus, displayStatus, statusColor } from '@/utils/runnerStatus'
+import { countByStatus, displayStatus, isRunnerBusy, statusColor } from '@/utils/runnerStatus'
+
+const ACTION_DISPATCH = {
+  start: 'startRunner',
+  stop: 'stopRunner',
+  restart: 'restartRunner',
+}
 
 const store = useStore()
 const route = useRoute()
@@ -272,7 +299,8 @@ const recreateOpen = ref(false)
 const recreateToken = ref('')
 const logsOpen = ref(false)
 const logsRunnerId = ref('')
-const actionLoading = ref(false)
+/** @type {import('vue').Ref<null | 'start' | 'stop' | 'restart' | 'recreate' | 'delete'>} */
+const actionLoading = ref(null)
 const { selectedId, detailsOpen, isDesktop, select, clear } = useListDetailsPane()
 let pollTimer
 
@@ -303,6 +331,7 @@ const orphans = computed(() => store.state.orphans || [])
 const storeReadable = computed(() => store.state.storeReadable !== false)
 const storeError = computed(() => store.state.storeError)
 const selected = computed(() => runners.value.find((r) => r.id === selectedId.value) || null)
+const selectedBusy = computed(() => isRunnerBusy(selected.value))
 
 function rowProps({ item }) {
   const row = item?.raw ?? item
@@ -330,12 +359,23 @@ function onDetailsDialog(open) {
 }
 
 function openLogs() {
-  if (!selected.value?.id) return
+  if (!selected.value?.id || actionLoading.value) return
   logsRunnerId.value = selected.value.id
   logsOpen.value = true
 }
 
+function openEdit() {
+  if (!selected.value || selectedBusy.value || actionLoading.value) return
+  editOpen.value = true
+}
+
+function openDelete() {
+  if (!selected.value || selectedBusy.value || actionLoading.value) return
+  deleteOpen.value = true
+}
+
 function openRecreate() {
+  if (!selected.value || selectedBusy.value || actionLoading.value) return
   recreateToken.value = ''
   recreateOpen.value = true
 }
@@ -359,22 +399,24 @@ async function refresh() {
   }
 }
 
-async function runAction(action) {
-  if (!selected.value) return
-  actionLoading.value = true
+async function runAction(key) {
+  const dispatch = ACTION_DISPATCH[key]
+  if (!selected.value || !dispatch || actionLoading.value) return
+  actionLoading.value = key
   try {
-    await store.dispatch(action, selected.value.id)
+    await store.dispatch(dispatch, selected.value.id)
     await refreshSelected()
   } catch {
     /* error surfaced via store */
   } finally {
-    actionLoading.value = false
+    actionLoading.value = null
   }
 }
 
 async function confirmRecreate() {
-  if (!selected.value) return
-  actionLoading.value = true
+  // Busy gating is UI-entry only; an already-open dialog may still confirm.
+  if (!selected.value || actionLoading.value) return
+  actionLoading.value = 'recreate'
   try {
     await store.dispatch('recreateRunner', {
       id: selected.value.id,
@@ -385,13 +427,14 @@ async function confirmRecreate() {
   } catch {
     /* error surfaced via store */
   } finally {
-    actionLoading.value = false
+    actionLoading.value = null
   }
 }
 
 async function confirmDelete() {
-  if (!selected.value) return
-  actionLoading.value = true
+  // Busy gating is UI-entry only; an already-open dialog may still confirm.
+  if (!selected.value || actionLoading.value) return
+  actionLoading.value = 'delete'
   try {
     const id = selected.value.id
     await store.dispatch('deleteRunner', id)
@@ -400,7 +443,7 @@ async function confirmDelete() {
   } catch {
     /* error surfaced via store */
   } finally {
-    actionLoading.value = false
+    actionLoading.value = null
   }
 }
 

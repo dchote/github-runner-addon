@@ -59,7 +59,7 @@ func TestBuildEnvJobHooks(t *testing.T) {
 	m := &Manager{}
 	env := m.buildEnv(
 		store.Runner{Name: "n", Scope: "repo", URL: "https://github.com/a/b", Labels: []string{"self-hosted"}},
-		"", "", "/srv/gha-work/n",
+		"", "", "/srv/gha-work/n", false,
 	)
 	joined := strings.Join(env, "\n")
 	if !strings.Contains(joined, "ACTIONS_RUNNER_HOOK_JOB_STARTED=/srv/gha-work/n/.gha-addon/hooks/job-started.sh") {

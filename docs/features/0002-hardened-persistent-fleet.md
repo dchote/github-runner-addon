@@ -19,7 +19,7 @@ Runner agents continue to run in the configured container image (default [`myoun
 - Store `Update`, schema version, startup/periodic reconcile
 - `POST /runners/{id}/recreate`, `PATCH /runners/{id}` (labels / runtime fields)
 - Per-runner image override, CPU/memory limits, extra env, docker-sock override
-- Scrub `RUNNER_TOKEN` from container env after successful registration
+- Configure-only then tokenless run so `RUNNER_TOKEN` never remains on the long-running container
 - Network-trust auth (HA ingress or private network); compose binds localhost
 - Enriched health, rate limits, sanitized errors
 - UI: status summary, PAT-aware create, recreate, settings read-only, logs download/reconnect
@@ -41,6 +41,6 @@ Network trust only. Do not expose `:8099` on a public interface. Home Assistant 
 - Registration tokens are never stored in `runners.json`.
 - PAT is never written into runner containers.
 - Delete with PAT: best-effort GitHub deregister, then local container/volume removal (local delete proceeds after warn if GitHub fails).
-- Recreate keeps the named volume when possible. When the data volume is **missing**, a registration token or configured PAT is **required**. When the volume exists, registration files are reused (optional PAT mint for refresh).
+- Recreate keeps the named volume when possible. When the data volume is **missing** or workdir reconfigure is required, a registration token or configured PAT is **required**. When registration files on the volume are reusable, recreate starts without a token (no mint/scrub) so GitHub sessions are not interrupted.
 - Operators can **edit** labels and runtime fields in the UI (`PATCH`); Save & apply recreates the container.
 - Orphan managed containers are listed in the UI from health.

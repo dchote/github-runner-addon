@@ -16,9 +16,9 @@ For a fuller product description, install notes, and attribution, see the [repos
 2. Click **Create runner**.
 3. Enter a unique **name**, the **GitHub project URL** (repository or organization), and a **registration token** (optional when a PAT is configured).
 4. Optionally set labels, CPU/memory limits, persistent cache, workdir host path (default `/srv/gha-work/<name>`), and other runtime fields.
-5. Monitor status in the table; use **Edit**, **Logs**, **Recreate**, and lifecycle actions as needed. When a container is **running**, the Status column shows **idle** / **busy** / **unknown** (job activity from local hooks, no PAT). Details show current job fields while busy.
+5. Monitor status in the table; use **Edit**, **Logs**, **Recreate**, and lifecycle actions as needed. When a container is **running**, the Status column shows **idle** / **busy** / **unknown** (job activity from local hooks, no PAT). Details show current job fields while busy. While **busy**, the UI disables Edit, Delete, and Recreate (start/stop/restart/logs stay available).
 
-Registration tokens are passed to the runner container only until registration succeeds (then scrubbed from container env). They are not stored in `runners.json`. The PAT is never written into runner containers.
+Registration tokens are passed only to a short-lived configure-only container, then the long-running listener starts without them. They are not stored in `runners.json`. The PAT is never written into runner containers.
 
 ### Job activity (idle / busy)
 
@@ -49,7 +49,7 @@ Classic: `repo` for repository runners; org runner admin / `admin:org` for organ
 
 ## Consuming repositories (Actions secrets)
 
-This manager’s short-lived container env **`RUNNER_TOKEN`** is a **registration** token (minted from the app PAT or pasted once). It is scrubbed after registration and is **not** an Actions repository secret.
+This manager’s short-lived container env **`RUNNER_TOKEN`** is a **registration** token (minted from the app PAT or pasted once). It is used only during configure and is **not** an Actions repository secret.
 
 Repos that prefer a managed self-hosted runner when online (then fall open to `ubuntu-latest`) need a **different** credential in **Settings → Secrets and variables → Actions**:
 

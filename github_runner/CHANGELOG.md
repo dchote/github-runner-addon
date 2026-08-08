@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1
+
+- Register runners with a configure-only (`DEBUG_ONLY`) container, then start the long-running listener without `RUNNER_TOKEN` — avoids killing a live GitHub session to scrub the token (fixes “session already exists” races)
+- Recreate reuses volume credentials without minting a fresh token unless workdir/volume reconfigure is required
+- UI: only the action that was clicked shows a loading spinner; other controls are disabled while it runs
+- UI: disable Edit / Delete / Recreate while a runner is busy (`job_state=busy`); start/stop/restart/logs stay available (UI-only; API unchanged)
+
 ## 0.5.0
 
 - Show runner **idle/busy** job activity (and current job fields while busy) from local Actions job hooks — no PAT required; see [0005](../docs/features/0005-runner-job-state.md)

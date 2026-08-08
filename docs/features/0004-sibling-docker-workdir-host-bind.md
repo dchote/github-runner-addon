@@ -29,7 +29,7 @@ For every managed runner the control plane:
 | Action | Behavior |
 |--------|----------|
 | Create | `mkdir -p` host path → bind mount → configure `--work` → assert `.runner` `workFolder` matches |
-| Recreate / Save & apply | Stop container → if mismatch, clear `.runner` → start with token/PAT → remount + reconfigure → assert match |
+| Recreate / Save & apply | Stop container → if mismatch, clear `.runner` → configure-only (`DEBUG_ONLY` + token/PAT) then tokenless run → assert match; if no mismatch, restart with volume credentials only |
 | Delete | Removes container + `*-data`; **never** deletes the host workdir tree; best-effort removes obsolete `*-work` volumes from older releases |
 
 Order matters: never clear `.runner` while the old container is still running.

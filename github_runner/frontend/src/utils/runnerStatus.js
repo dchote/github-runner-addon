@@ -20,6 +20,11 @@ export function displayStatus(runner) {
   return runner.status || 'unknown'
 }
 
+/** True when the runner is actively executing a GitHub Actions job. */
+export function isRunnerBusy(runner) {
+  return runner?.job_state === 'busy'
+}
+
 /** Aggregate counts from an enriched runners list (avoids a second health round-trip). */
 export function countByStatus(runners) {
   const counts = { running: 0, exited: 0, missing: 0, unknown: 0, busy: 0, total: 0 }

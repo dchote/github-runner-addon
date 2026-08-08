@@ -55,16 +55,16 @@ Creating a runner:
 1. Validate name, URL; resolve registration token (request body or mint via PAT).
 2. Derive `RUNNER_SCOPE` (`repo` vs `org`) from URL path segments.
 3. Persist expected config (token not in `runners.json`).
-4. Create named volume + container from configured runner image (default **`myoung34/github-runner`**) with env understood by that image’s entrypoint:
-   `REPO_URL` / `ORG_NAME`, `RUNNER_NAME`, `RUNNER_TOKEN`, `LABELS`,
+4. Create named volume + containers from configured runner image (default **`myoung34/github-runner`**) with env understood by that image’s entrypoint:
+   `REPO_URL` / `ORG_NAME`, `RUNNER_NAME`, `RUNNER_TOKEN` (configure phase only), `LABELS`,
    `CONFIGURED_ACTIONS_RUNNER_FILES_DIR`, `RUNNER_SCOPE`,
    `DISABLE_AUTO_UPDATE`, `DISABLE_AUTOMATIC_DEREGISTRATION`,
    `ACTIONS_RUNNER_HOOK_JOB_STARTED`, `ACTIONS_RUNNER_HOOK_JOB_COMPLETED`
    (the deregistration flag is required with reusage or the image entrypoint exits 1;
    hooks write `$RUNNER_WORKDIR/.gha-addon/status.json` for idle/busy — see [0005](features/0005-runner-job-state.md)).
 5. Labels: `com.github-runner-addon.managed=true`, `com.github-runner-addon.id=<id>`.
-6. Wait briefly for registration success in container logs; on failure roll back.
-7. Scrub `RUNNER_TOKEN` from container env by recreating the container against the same volume (registration files remain).
+6. Configure-only start (`DEBUG_ONLY=true` + token) until `.runner` is on the volume; on failure roll back.
+7. Start the long-running listener **without** `RUNNER_TOKEN` (registration files remain on the volume).
 
 List merges JSON records with Docker inspect status (`missing` when the container is absent). When the container is running, enrich also reads local job-hook `status.json` (`job_state` / `current_job`). Startup/periodic reconcile does not mutate the store for missing containers; it inventories unmanaged labeled **orphan** containers (no matching store row) and exposes them on `/api/v1/health`.
 
@@ -99,7 +99,7 @@ The SPA injects `<base href>` from `X-Ingress-Path` (and the UI resolves API/WS 
 
 Classic PAT minimums: `repo` for repository runners; `admin:org` (or org runner admin) for organization runners. Fine-grained PATs need Actions runner administration on the target org/repo. Never commit the PAT; store it in HA options or a private env file.
 
-**Name collision:** container env `RUNNER_TOKEN` (registration, scrubbed after configure) is not the same as a consuming repo’s Actions secret `RUNNER_TOKEN` (PAT used only to list runners for self-hosted-vs-hosted selection). See [DOCS — Consuming repositories](../github_runner/DOCS.md#consuming-repositories-actions-secrets).
+**Name collision:** container env `RUNNER_TOKEN` (registration, configure phase only) is not the same as a consuming repo’s Actions secret `RUNNER_TOKEN` (PAT used only to list runners for self-hosted-vs-hosted selection). See [DOCS — Consuming repositories](../github_runner/DOCS.md#consuming-repositories-actions-secrets).
 
 ## Credits
 

@@ -12,8 +12,8 @@
         icon="mdi-pencil"
         size="small"
         variant="text"
-        aria-label="Edit runner"
-        :loading="loading"
+        :aria-label="busy ? 'Edit runner (busy)' : 'Edit runner'"
+        :disabled="busy || !!loadingAction"
         @click="$emit('edit')"
       />
       <v-btn
@@ -21,8 +21,9 @@
         icon="mdi-delete"
         size="small"
         variant="text"
-        aria-label="Delete runner"
-        :loading="loading"
+        :aria-label="busy ? 'Delete runner (busy)' : 'Delete runner'"
+        :loading="loadingAction === 'delete'"
+        :disabled="busy || (!!loadingAction && loadingAction !== 'delete')"
         @click="$emit('delete')"
       />
     </div>
@@ -32,7 +33,8 @@
 <script setup>
 defineProps({
   name: { type: String, required: true },
-  loading: { type: Boolean, default: false },
+  loadingAction: { type: String, default: null },
+  busy: { type: Boolean, default: false },
   cardTitle: { type: Boolean, default: false },
 })
 defineEmits(['edit', 'delete'])
