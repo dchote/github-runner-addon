@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/dchote/github-runner-addon/internal/container/docker"
@@ -111,6 +112,43 @@ func (m *Manager) applyJobStatus(ctx context.Context, v *View, containerRef, wor
 	if state == jobStateBusy {
 		v.CurrentJob = job
 	}
+}
+
+// errIfBusy rejects destructive lifecycle ops while a job is in progress so
+// recreate/delete/apply cannot tear down the agent mid-build (GitHub then
+// reports "self-hosted runner lost communication").
+func (m *Manager) errIfBusy(ctx context.Context, rec store.Runner) error {
+	workdir := resolveWorkdirHostPath(rec)
+	if workdir == "" {
+		return nil
+	}
+	m.invalidateJobStatusCache(workdir)
+	data, err := m.readJobStatusBytes(ctx, rec.ContainerName, workdir)
+	if err != nil {
+		// Missing/unreadable status: fail open (same as unknown in the UI).
+		return nil
+	}
+	state, job := parseJobStatusFile(data, time.Now())
+	if state != jobStateBusy {
+		return nil
+	}
+	detail := "a job is running"
+	if job != nil {
+		parts := make([]string, 0, 3)
+		if job.Repository != "" {
+			parts = append(parts, job.Repository)
+		}
+		if job.Workflow != "" {
+			parts = append(parts, job.Workflow)
+		}
+		if job.Job != "" {
+			parts = append(parts, job.Job)
+		}
+		if len(parts) > 0 {
+			detail = strings.Join(parts, " / ")
+		}
+	}
+	return fmt.Errorf("%w: refuse recreate/delete/apply while busy (%s); wait for the job to finish or stop the runner first", ErrRunnerBusy, detail)
 }
 
 func (m *Manager) readJobStatusBytes(ctx context.Context, containerRef, workdir string) ([]byte, error) {

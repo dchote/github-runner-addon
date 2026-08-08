@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +136,23 @@ func TestApplyJobStatusFromHostFile(t *testing.T) {
 	m.applyJobStatus(context.Background(), v, "", workdir)
 	if v.JobState != jobStateBusy || v.CurrentJob == nil || v.CurrentJob.Repository != "a/b" {
 		t.Fatalf("%+v", v)
+	}
+}
+
+func TestErrIfBusy(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	workdir := "/srv/gha-work/lab"
+	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":true,"repository":"o/r","workflow":"Release","job":"build","updated_at":"2026-08-08T11:59:00Z"}`)
+	m := &Manager{workdirHost: fh}
+	rec := store.Runner{Name: "lab", WorkdirHostPath: workdir, ContainerName: "gha-runner-lab"}
+	err := m.errIfBusy(context.Background(), rec)
+	if err == nil || !errors.Is(err, ErrRunnerBusy) {
+		t.Fatalf("want ErrRunnerBusy, got %v", err)
+	}
+	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":false,"updated_at":"2026-08-08T11:59:00Z"}`)
+	m.invalidateJobStatusCache(workdir)
+	if err := m.errIfBusy(context.Background(), rec); err != nil {
+		t.Fatalf("idle should allow: %v", err)
 	}
 }
 

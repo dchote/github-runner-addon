@@ -934,6 +934,9 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 		return View{}, err
 	}
 	if req.Apply {
+		if err := m.errIfBusy(ctx, rec); err != nil {
+			return View{}, err
+		}
 		view, recErr := m.Recreate(ctx, id, RecreateRequest{Token: req.Token})
 		if recErr == nil {
 			m.cleanupStalePersistenceVolumes(ctx, before, rec)
@@ -981,6 +984,9 @@ func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) 
 	}
 	rec, err := m.Store.Get(id)
 	if err != nil {
+		return View{}, err
+	}
+	if err := m.errIfBusy(ctx, rec); err != nil {
 		return View{}, err
 	}
 	info, err := m.parseProject(rec.URL)
@@ -1110,6 +1116,9 @@ func (m *Manager) Restart(ctx context.Context, id string) (View, error) {
 func (m *Manager) Delete(ctx context.Context, id string) error {
 	r, err := m.Store.Get(id)
 	if err != nil {
+		return err
+	}
+	if err := m.errIfBusy(ctx, r); err != nil {
 		return err
 	}
 	if m.Docker == nil {

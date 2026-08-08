@@ -236,6 +236,8 @@ func (h *Handlers) writeRunnerErr(w http.ResponseWriter, err error) bool {
 		WriteError(w, http.StatusNotFound, "NOT_FOUND", "runner not found", nil)
 	case errors.Is(err, store.ErrConflict):
 		WriteError(w, http.StatusConflict, "CONFLICT", "runner name or container already exists", nil)
+	case errors.Is(err, runner.ErrRunnerBusy):
+		WriteError(w, http.StatusConflict, "RUNNER_BUSY", publicErr(err), nil)
 	case errors.Is(err, runner.ErrValidation):
 		WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", publicErr(err), nil)
 	case errors.Is(err, runner.ErrGitHub):
@@ -262,6 +264,7 @@ func publicErr(err error) string {
 		"github api error: ",
 		"rate limited: ",
 		"docker unavailable: ",
+		"runner busy: ",
 	} {
 		if strings.HasPrefix(msg, prefix) {
 			msg = strings.TrimPrefix(msg, prefix)

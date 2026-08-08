@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.3
+
+- API rejects recreate / delete / patch-apply while `job_state=busy` (**409 `RUNNER_BUSY`**) so Save & apply cannot kill in-flight builds
+- Stop/restart remain available for emergency intervention; UI busy gating unchanged
+
 ## 0.5.2
 
 - Soft advisories on runner API/UI as `warnings[]` (create/patch still succeed):
