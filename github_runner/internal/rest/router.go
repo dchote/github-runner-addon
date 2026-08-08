@@ -18,11 +18,13 @@ func NewRouter(mgr *runner.Manager, dockerClient *docker.Client, feFS fs.FS) htt
 		h.Docker = dockerClient
 	}
 	r := chi.NewRouter()
+	// First WriteHeader wins — prevents chi Timeout 504 racing handler WriteOK/WriteError.
+	r.Use(SuppressDuplicateWriteHeader)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 
-	r.Get("/health", h.Health)
+	r.With(middleware.Timeout(5*time.Second)).Get("/health", h.Health)
 	r.Get("/docs", swaggerUIHandler())
 	r.Get("/docs/openapi.yaml", openAPIHandler())
 	r.Get("/docs/swagger-ui.css", swaggerAssetHandler("swagger-ui.css"))
@@ -30,7 +32,7 @@ func NewRouter(mgr *runner.Manager, dockerClient *docker.Client, feFS fs.FS) htt
 	r.Get("/ws", h.WebSocket)
 
 	r.Route("/api/v1", func(api chi.Router) {
-		api.Get("/health", h.Health)
+		api.With(middleware.Timeout(5*time.Second)).Get("/health", h.Health)
 		api.Get("/openapi.yaml", openAPIHandler())
 		api.With(middleware.Timeout(60*time.Second)).Get("/runners", h.ListRunners)
 		api.With(middleware.Timeout(10*time.Minute)).Post("/runners", h.CreateRunner)

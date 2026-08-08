@@ -25,16 +25,17 @@ Registration uses a two-phase start: a one-shot container with `RUNNER_TOKEN` an
 
 ### Persistent cache and workdir
 
-Per-runner mounts (see [0003-persistent-runner-cache](../features/0003-persistent-runner-cache.md) and [0004](../features/0004-sibling-docker-workdir-host-bind.md)):
+Per-runner mounts (see [0003](../features/0003-persistent-runner-cache.md), [0006](../features/0006-same-path-build-cache.md), and [0004](../features/0004-sibling-docker-workdir-host-bind.md)):
 
 | Mount | When | Storage | Target | Notes |
 |-------|------|---------|--------|-------|
-| Cache | optional (`cache.enabled`) | Named volume or host bind | default `/cache` | Same `volume_name` / `host_path` across runners shares the cache. For sibling Docker / Buildx `type=local` that use the target as a host path, prefer bind with `host_path` = `target` (commonly both `/cache`); mismatch surfaces soft `warnings[]` |
+| Cache (bind) | optional (`cache.enabled`) | Host same-path bind | `host_path` | UI default. Injects `RUNNER_CACHE`. Sibling Docker / Buildx must use that path |
+| Cache (volume) | optional | Named volume | default `/cache` | Soft `warnings[]` — siblings cannot see named volumes |
 | Workdir | **always** | Host directory | default `/srv/gha-work/<normalized-name>` (same-path bind) | `RUNNER_WORKDIR` + agent `workFolder` must match; not a Docker volume `_data` path |
 
-Prefer **named volumes** for cache on Home Assistant OS when workflows do not need sibling host binds of the cache path. Workdir and cache host binds use **Docker host** paths (not addon `/data` or `/share`). See [0003](../features/0003-persistent-runner-cache.md) same-path cache rule.
+Prefer **host bind** for builder hosts that need sibling Docker / Buildx local cache. Prefer **named volumes** on Home Assistant OS when sibling host binds are not required. Workdir and cache host binds use **Docker host** paths (not addon `/data` or `/share`).
 
-Before bind-mount, the manager `mkdir -p`s missing host dirs via a one-shot helper that bind-mounts the narrowest known root (`/srv`, `/mnt`, …) containing the path (not `/` unless necessary).
+Before bind-mount, the manager `mkdir -p`s missing host dirs via a one-shot helper that bind-mounts the path’s top-level directory (e.g. `/media` for `/media/usb0/ci-cache`) so any absolute Docker-host path works — SSD, USB, or other mounts — without an allowlist.
 
 `myoung34/github-runner` sets `--work` only at **configure** time. Recreate stops the container first, then clears `.runner` when `workFolder` differs, then starts with a token/PAT. After start, the manager asserts agent `workFolder` matches the host bind and returns an error if it does not (fail closed). Env alone never moves the agent workdir.
 

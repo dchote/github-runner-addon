@@ -26,13 +26,35 @@ type errEnvelope struct {
 	Error  ErrorBody `json:"error"`
 }
 
+// headerWritten reports whether WriteHeader was already called (e.g. timeout 504).
+// Walks Unwrap() so chi Timeout (and similar) wrappers still find onceHeaderWriter.
+func headerWritten(w http.ResponseWriter) bool {
+	for w != nil {
+		if ow, ok := w.(*onceHeaderWriter); ok {
+			return ow.wrote.Load()
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return false
+		}
+		w = u.Unwrap()
+	}
+	return false
+}
+
 func WriteOK(w http.ResponseWriter, status int, data interface{}) {
+	if headerWritten(w) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(okEnvelope{Result: ResultOK, Data: data})
 }
 
 func WriteError(w http.ResponseWriter, status int, code, message string, details interface{}) {
+	if headerWritten(w) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	if details == nil {

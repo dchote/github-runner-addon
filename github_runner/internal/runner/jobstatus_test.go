@@ -133,9 +133,22 @@ func TestApplyJobStatusFromHostFile(t *testing.T) {
 	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":true,"repository":"a/b","workflow":"w","job":"j","updated_at":"2026-08-08T11:59:00Z"}`)
 	m := &Manager{workdirHost: fh}
 	v := &View{WorkdirEffective: workdir}
-	m.applyJobStatus(context.Background(), v, "", workdir)
+	m.applyJobStatus(context.Background(), v, "", workdir, true)
 	if v.JobState != jobStateBusy || v.CurrentJob == nil || v.CurrentJob.Repository != "a/b" {
 		t.Fatalf("%+v", v)
+	}
+}
+
+func TestApplyJobStatusListModeSkipsHostHelper(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	workdir := "/srv/gha-work/lab"
+	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":true,"repository":"a/b","updated_at":"2026-08-08T11:59:00Z"}`)
+	m := &Manager{workdirHost: fh}
+	v := &View{WorkdirEffective: workdir}
+	// List mode: no container ref → no CopyFromContainer, no host helper.
+	m.applyJobStatus(context.Background(), v, "", workdir, false)
+	if v.JobState != jobStateUnknown {
+		t.Fatalf("list mode without container ref want unknown, got %q", v.JobState)
 	}
 }
 
@@ -163,19 +176,19 @@ func TestJobStatusCacheTTL(t *testing.T) {
 	fh.hostFiles[path] = []byte(`{"busy":false,"updated_at":"2026-08-08T11:00:00Z"}`)
 	m := &Manager{workdirHost: fh}
 	v := &View{}
-	m.applyJobStatus(context.Background(), v, "", workdir)
+	m.applyJobStatus(context.Background(), v, "", workdir, true)
 	if v.JobState != jobStateIdle {
 		t.Fatalf("first read: %q", v.JobState)
 	}
 	fh.hostFiles[path] = []byte(`{"busy":true,"repository":"x/y","updated_at":"2026-08-08T11:59:00Z"}`)
 	v2 := &View{}
-	m.applyJobStatus(context.Background(), v2, "", workdir)
+	m.applyJobStatus(context.Background(), v2, "", workdir, true)
 	if v2.JobState != jobStateIdle {
 		t.Fatalf("cached read should still be idle, got %q", v2.JobState)
 	}
 	m.invalidateJobStatusCache(workdir)
 	v3 := &View{}
-	m.applyJobStatus(context.Background(), v3, "", workdir)
+	m.applyJobStatus(context.Background(), v3, "", workdir, true)
 	if v3.JobState != jobStateBusy {
 		t.Fatalf("after invalidate: %q", v3.JobState)
 	}

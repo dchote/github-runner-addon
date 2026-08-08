@@ -5,6 +5,7 @@ import {
   buildRuntimePayload,
   cacheFromRunner,
   cacheSiblingPathWarning,
+  cleanCachePath,
   normalizeRunnerName,
   defaultWorkdirHostPath,
 } from './runnerConfig.js'
@@ -82,7 +83,7 @@ describe('runnerConfig', () => {
     })
   })
 
-  it('builds cache bind payload', () => {
+  it('builds cache bind payload as same-path', () => {
     const p = buildRuntimePayload({
       labels: [],
       image: '',
@@ -93,20 +94,21 @@ describe('runnerConfig', () => {
       mountDockerSock: null,
       cacheEnabled: true,
       cacheType: 'bind',
-      cacheHostPath: '/srv/runner-cache',
+      cacheHostPath: '/scratch/build-cache/lab',
       cacheTarget: '/cache',
     })
     expect(p.cache).toEqual({
       enabled: true,
       type: 'bind',
-      target: '/cache',
+      target: '/scratch/build-cache/lab',
       read_only: false,
-      host_path: '/srv/runner-cache',
+      host_path: '/scratch/build-cache/lab',
     })
   })
 
   it('reads cache from runner record', () => {
     expect(cacheFromRunner({}).enabled).toBe(false)
+    expect(cacheFromRunner({}).type).toBe('bind')
     const c = cacheFromRunner({
       cache: {
         enabled: true,
@@ -119,45 +121,42 @@ describe('runnerConfig', () => {
     expect(c.enabled).toBe(true)
     expect(c.type).toBe('bind')
     expect(c.hostPath).toBe('/srv/cache')
+    expect(c.target).toBe('/srv/cache')
     expect(c.readOnly).toBe(true)
   })
 
-  it('warns when cache bind host path differs from target', () => {
-    expect(
-      cacheSiblingPathWarning({
-        enabled: true,
-        type: 'bind',
-        hostPath: '/cache',
-        target: '/cache',
-      }),
-    ).toBe('')
-    expect(
-      cacheSiblingPathWarning({
-        enabled: true,
-        type: 'bind',
-        hostPath: '/cache/',
-        target: '/cache',
-      }),
-    ).toBe('')
-    const msg = cacheSiblingPathWarning({
-      enabled: true,
-      type: 'bind',
-      hostPath: '/srv/runner-cache',
-      target: '/cache',
+  it('omit cache.type defaults to volume (match Go API)', () => {
+    const c = cacheFromRunner({
+      cache: { enabled: true, host_path: '/unused', target: '/cache' },
     })
-    expect(msg).toMatch(/same-path/)
-    expect(msg).toContain('"/srv/runner-cache"')
-    expect(msg).toContain('"/cache"')
+    expect(c.type).toBe('volume')
+    expect(c.target).toBe('/cache')
+    expect(c.hostPath).toBe('')
+  })
+
+  it('cleans cache paths like Go path.Clean', () => {
+    expect(cleanCachePath('/scratch/x/')).toBe('/scratch/x')
+    expect(cleanCachePath('/a//b/./c/../d')).toBe('/a/b/d')
+  })
+
+  it('does not warn for bind cache (same-path)', () => {
+    expect(
+      cacheSiblingPathWarning({
+        enabled: true,
+        type: 'bind',
+        target: '/cache',
+      }),
+    ).toBe('')
   })
 
   it('warns when cache uses a named volume (sibling host bind miss)', () => {
     const msg = cacheSiblingPathWarning({
       enabled: true,
       type: 'volume',
-      hostPath: '',
-      target: '/cache',
+      target: '/cache/',
     })
     expect(msg).toMatch(/named volume/)
     expect(msg).toContain('"/cache"')
+    expect(msg).toMatch(/RUNNER_CACHE/)
   })
 })

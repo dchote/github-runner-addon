@@ -14,6 +14,7 @@ import (
 	"github.com/dchote/github-runner-addon/internal/github"
 	"github.com/dchote/github-runner-addon/internal/store"
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -25,6 +26,9 @@ const (
 	lifecycleOpTimeout = 9 * time.Minute
 	// detachedOpTimeout bounds shorter detached Docker ops (rollback, configure container swap).
 	detachedOpTimeout = 3 * time.Minute
+
+	// listEnrichConcurrency bounds parallel enrich workers during List.
+	listEnrichConcurrency = 8
 )
 
 func lifecycleContext() (context.Context, context.CancelFunc) {
@@ -38,6 +42,7 @@ var managedEnvKeys = map[string]struct{}{
 	"RUNNER_SCOPE":                        {},
 	"CONFIGURED_ACTIONS_RUNNER_FILES_DIR": {},
 	"RUNNER_WORKDIR":                      {},
+	"RUNNER_CACHE":                        {},
 	"DISABLE_AUTO_UPDATE":                 {},
 	"DISABLE_AUTOMATIC_DEREGISTRATION":    {},
 	"DEBUG_ONLY":                          {},
@@ -104,8 +109,35 @@ type Manager struct {
 	jobStatusMu    sync.RWMutex
 	jobStatusCache map[string]jobStatusCacheEntry
 
+	// runnerLocks serializes Create (create:<containerName> + id), Patch, Recreate,
+	// Delete, Start, Stop, Restart per key.
+	runnerLocks sync.Map // string -> *sync.Mutex
+
 	// verifyTimeout bounds post-start workFolder checks (0 = 45s). Tests may shorten it.
 	verifyTimeout time.Duration
+}
+
+// lockRunner returns an unlock func; callers must defer unlock().
+// Prefer lockRunnerOpt(..., true) for create:<name> and Delete so idle keys are pruned.
+func (m *Manager) lockRunner(key string) func() {
+	return m.lockRunnerOpt(key, false)
+}
+
+func (m *Manager) lockRunnerOpt(key string, forget bool) func() {
+	v, _ := m.runnerLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return func() {
+		mu.Unlock()
+		if !forget {
+			return
+		}
+		// Only forget if nobody else grabbed the lock between Unlock and TryLock.
+		if mu.TryLock() {
+			m.runnerLocks.Delete(key)
+			mu.Unlock()
+		}
+	}
 }
 
 type agentWorkFolderCache struct {
@@ -180,6 +212,7 @@ type View struct {
 	WorkdirAgent     string      `json:"workdir_agent,omitempty"`     // workFolder from /runner/data/.runner
 	WorkdirMismatch  bool        `json:"workdir_mismatch,omitempty"`  // agent workFolder ≠ effective path
 	WorkdirError     string      `json:"workdir_error,omitempty"`     // diagnostics error reading .runner
+	CacheEffective   string      `json:"cache_effective,omitempty"`   // resolved cache path (RUNNER_CACHE)
 	Warnings         []string    `json:"warnings,omitempty"`          // soft config advisories (do not fail the request)
 }
 
@@ -191,10 +224,29 @@ type enrichOpts struct {
 	// workdirDiag bypasses the in-memory cache and reads .runner from the data volume.
 	// List uses cache-only; Get/verify request a fresh read.
 	workdirDiag bool
+	// jobStatusLive allows CopyFromContainer + host helper reads for status.json.
+	// List keeps this false (cache + CopyFromContainer only) to avoid alpine helper storms.
+	jobStatusLive bool
 }
 
 func (m *Manager) enrich(ctx context.Context, r store.Runner, opts enrichOpts) View {
-	v := View{Runner: r, Status: "unknown", WorkdirEffective: resolveWorkdirHostPath(r)}
+	return m.enrichWithManaged(ctx, r, nil, opts)
+}
+
+// enrichWithManaged builds a View. When mc is non-nil (from a batched ListManaged),
+// InspectByName is skipped — important for scalable concurrent List.
+func (m *Manager) enrichWithManaged(ctx context.Context, r store.Runner, mc *docker.ManagedContainer, opts enrichOpts) View {
+	// Coerce bind cache onto the View copy so API clients see same-path target
+	// without requiring a store rewrite on every List.
+	if r.Cache != nil && r.Cache.Enabled {
+		r.Cache = normalizeCache(r.Cache)
+	}
+	v := View{
+		Runner:           r,
+		Status:           "unknown",
+		WorkdirEffective: resolveWorkdirHostPath(r),
+		CacheEffective:   resolveCacheEffective(r.Cache),
+	}
 	if warns := cacheSiblingWarnings(r.Cache); len(warns) > 0 {
 		v.Warnings = append(v.Warnings, warns...)
 	}
@@ -204,12 +256,24 @@ func (m *Manager) enrich(ctx context.Context, r store.Runner, opts enrichOpts) V
 	if m.Docker == nil {
 		return v
 	}
-	info, err := m.Docker.InspectByName(ctx, r.ContainerName)
-	if err != nil {
-		if !docker.IsContextError(err) {
-			slog.Warn("docker inspect failed", "container", r.ContainerName, "err", err)
+	var info docker.InspectInfo
+	if mc != nil {
+		info = docker.InspectInfo{
+			Name:    r.ContainerName,
+			Exists:  true,
+			ID:      mc.ID,
+			Status:  mc.Status,
+			Running: mc.Running,
 		}
-		return v
+	} else {
+		var err error
+		info, err = m.Docker.InspectByName(ctx, r.ContainerName)
+		if err != nil {
+			if !docker.IsContextError(err) {
+				slog.Warn("docker inspect failed", "container", r.ContainerName, "err", err)
+			}
+			return v
+		}
 	}
 	v.Status, v.Running = normalizeStatus(info)
 	if v.Running {
@@ -217,7 +281,7 @@ func (m *Manager) enrich(ctx context.Context, r store.Runner, opts enrichOpts) V
 		if ref == "" {
 			ref = r.ContainerName
 		}
-		m.applyJobStatus(ctx, &v, ref, v.WorkdirEffective)
+		m.applyJobStatus(ctx, &v, ref, v.WorkdirEffective, opts.jobStatusLive)
 	}
 	return v
 }
@@ -351,14 +415,53 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]View, 0, len(runners))
-	for _, r := range runners {
-		out = append(out, m.enrich(ctx, r, enrichOpts{workdirDiag: false}))
+	if len(runners) == 0 {
+		return nil, nil
+	}
+
+	managedByName := map[string]docker.ManagedContainer{}
+	if m.Docker != nil {
+		if managed, err := m.Docker.ListManaged(ctx); err == nil {
+			for _, c := range managed {
+				if c.Name != "" {
+					managedByName[c.Name] = c
+				}
+			}
+		} else if !docker.IsContextError(err) {
+			slog.Warn("list managed containers failed; falling back to per-runner inspect", "err", err)
+		}
+	}
+
+	out := make([]View, len(runners))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(listEnrichConcurrency)
+	for i, r := range runners {
+		i, r := i, r
+		g.Go(func() error {
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			var mc *docker.ManagedContainer
+			if c, ok := managedByName[r.ContainerName]; ok {
+				cp := c
+				mc = &cp
+			}
+			out[i] = m.enrichWithManaged(gctx, r, mc, enrichOpts{workdirDiag: false, jobStatusLive: false})
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		// Enrich itself does not return errors; treat unexpected group errors as fatal.
+		return nil, err
 	}
 	return out, nil
 }
 
 // CountByStatus aggregates statuses from an already-enriched list (no Docker calls).
+// Useful for tests and callers that already have Views; Health uses StatusCounts.
 func CountByStatus(list []View) map[string]int {
 	counts := map[string]int{"running": 0, "exited": 0, "missing": 0, "unknown": 0, "total": len(list)}
 	for _, v := range list {
@@ -367,12 +470,52 @@ func CountByStatus(list []View) map[string]int {
 	return counts
 }
 
+// StatusCounts is a cheap health-path aggregator: one ListManaged + store rows,
+// no job-status helpers and no per-runner InspectByName.
+// When Docker is unavailable or ListManaged fails, statuses are "unknown"
+// (same as List enrich when inspect is unavailable).
 func (m *Manager) StatusCounts(ctx context.Context) (map[string]int, error) {
-	list, err := m.List(ctx)
+	runners, err := m.Store.List()
 	if err != nil {
 		return nil, err
 	}
-	return CountByStatus(list), nil
+	counts := map[string]int{"running": 0, "exited": 0, "missing": 0, "unknown": 0, "total": len(runners)}
+	if len(runners) == 0 {
+		return counts, nil
+	}
+	if m.Docker == nil {
+		counts["unknown"] = len(runners)
+		return counts, nil
+	}
+	managed, err := m.Docker.ListManaged(ctx)
+	if err != nil {
+		if docker.IsContextError(err) {
+			return counts, err
+		}
+		slog.Warn("status counts: list managed failed", "err", err)
+		counts["unknown"] = len(runners)
+		return counts, nil
+	}
+	byName := make(map[string]docker.ManagedContainer, len(managed))
+	for _, c := range managed {
+		if c.Name != "" {
+			byName[c.Name] = c
+		}
+	}
+	for _, r := range runners {
+		c, ok := byName[r.ContainerName]
+		if !ok {
+			counts["missing"]++
+			continue
+		}
+		st, _ := normalizeStatus(docker.InspectInfo{
+			Exists:  true,
+			Status:  c.Status,
+			Running: c.Running,
+		})
+		counts[st]++
+	}
+	return counts, nil
 }
 
 func (m *Manager) Get(ctx context.Context, id string) (View, error) {
@@ -380,7 +523,7 @@ func (m *Manager) Get(ctx context.Context, id string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	return m.enrich(ctx, r, enrichOpts{workdirDiag: true}), nil
+	return m.enrich(ctx, r, enrichOpts{workdirDiag: true, jobStatusLive: true}), nil
 }
 
 func (m *Manager) Orphans() []OrphanView {
@@ -427,6 +570,12 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 	if name == "" || rawURL == "" {
 		return View{}, fmt.Errorf("%w: name and url are required", ErrValidation)
 	}
+	norm := docker.NormalizeName(name)
+	containerName := "gha-runner-" + norm
+	// Serialize same-name creates; forget key after so the map does not grow forever.
+	unlockName := m.lockRunnerOpt("create:"+containerName, true)
+	defer unlockName()
+
 	info, err := m.parseProject(rawURL)
 	if err != nil {
 		return View{}, err
@@ -447,8 +596,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 		slog.Warn("cache config advisory", "runner", name, "warning", w)
 	}
 	id := uuid.NewString()
-	norm := docker.NormalizeName(name)
-	containerName := "gha-runner-" + norm
+	// Hold the runner id lock for the rest of create so Delete/Start/Stop/Recreate
+	// cannot interleave after Store.Add while startContainer is still running.
+	unlockID := m.lockRunner(id)
+	defer unlockID()
 	volumeName := containerName + "-data"
 	image := strings.TrimSpace(req.Image)
 	if image == "" {
@@ -715,6 +866,9 @@ func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string, con
 		"ACTIONS_RUNNER_HOOK_JOB_STARTED=" + jobStartedHookPath(workdir),
 		"ACTIONS_RUNNER_HOOK_JOB_COMPLETED=" + jobCompletedHookPath(workdir),
 	}
+	if cachePath := resolveCacheEffective(rec.Cache); cachePath != "" && cachePath != "." {
+		env = append(env, "RUNNER_CACHE="+cachePath)
+	}
 	if configureOnly {
 		env = append(env, "DEBUG_ONLY=true")
 	}
@@ -876,6 +1030,9 @@ func summarizeLogs(logs string) string {
 }
 
 func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View, error) {
+	unlock := m.lockRunner(id)
+	defer unlock()
+
 	before, err := m.Store.Get(id)
 	if err != nil {
 		return View{}, err
@@ -934,10 +1091,9 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 		return View{}, err
 	}
 	if req.Apply {
-		if err := m.errIfBusy(ctx, rec); err != nil {
-			return View{}, err
-		}
-		view, recErr := m.Recreate(ctx, id, RecreateRequest{Token: req.Token})
+		// Already hold runner lock — call unlocked recreate to avoid deadlock.
+		// recreate performs errIfBusy.
+		view, recErr := m.recreate(ctx, id, RecreateRequest{Token: req.Token})
 		if recErr == nil {
 			m.cleanupStalePersistenceVolumes(ctx, before, rec)
 		}
@@ -976,6 +1132,12 @@ func (m *Manager) cleanupStalePersistenceVolumes(ctx context.Context, before, af
 }
 
 func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) (View, error) {
+	unlock := m.lockRunner(id)
+	defer unlock()
+	return m.recreate(ctx, id, req)
+}
+
+func (m *Manager) recreate(ctx context.Context, id string, req RecreateRequest) (View, error) {
 	if m.Docker == nil {
 		return View{}, ErrDockerUnavailable
 	}
@@ -1080,6 +1242,8 @@ func (m *Manager) applyLifecycle(ctx context.Context, id string, op func(context
 }
 
 func (m *Manager) Start(ctx context.Context, id string) (View, error) {
+	unlock := m.lockRunner(id)
+	defer unlock()
 	if m.Docker == nil {
 		return View{}, ErrDockerUnavailable
 	}
@@ -1094,12 +1258,16 @@ func (m *Manager) Start(ctx context.Context, id string) (View, error) {
 }
 
 func (m *Manager) Stop(ctx context.Context, id string) (View, error) {
+	unlock := m.lockRunner(id)
+	defer unlock()
 	return m.applyLifecycle(ctx, id, func(ctx context.Context, name string) error {
 		return m.Docker.Stop(ctx, name)
 	})
 }
 
 func (m *Manager) Restart(ctx context.Context, id string) (View, error) {
+	unlock := m.lockRunner(id)
+	defer unlock()
 	if m.Docker == nil {
 		return View{}, ErrDockerUnavailable
 	}
@@ -1114,6 +1282,8 @@ func (m *Manager) Restart(ctx context.Context, id string) (View, error) {
 }
 
 func (m *Manager) Delete(ctx context.Context, id string) error {
+	unlock := m.lockRunnerOpt(id, true)
+	defer unlock()
 	r, err := m.Store.Get(id)
 	if err != nil {
 		return err

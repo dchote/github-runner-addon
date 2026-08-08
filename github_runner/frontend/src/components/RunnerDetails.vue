@@ -111,12 +111,14 @@ const sockLabel = computed(() => {
 const cacheLabel = computed(() => {
   const c = props.runner?.cache
   if (!c?.enabled) return 'none'
-  const target = c.target || '/cache'
   const ro = c.read_only ? ' (read-only)' : ''
+  const effective = props.runner?.cache_effective
   if (c.type === 'bind') {
-    return `bind ${c.host_path || '?'} → ${target}${ro}`
+    const path = effective || c.host_path || c.target || '?'
+    return `bind ${path} (RUNNER_CACHE)${ro}`
   }
   const vol = c.volume_name || `${props.runner.container_name}-cache`
+  const target = effective || c.target || '/cache'
   return `volume ${vol} → ${target}${ro}`
 })
 

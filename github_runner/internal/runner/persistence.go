@@ -88,13 +88,31 @@ func normalizeCache(c *store.CacheConfig) *store.CacheConfig {
 	out.Type = cacheType(&out)
 	out.VolumeName = strings.TrimSpace(out.VolumeName)
 	out.HostPath = strings.TrimSpace(out.HostPath)
-	out.Target = cacheTarget(&out)
 	if out.Type == "bind" {
 		out.VolumeName = ""
+		// Same-path rule: bind mounts always use host_path as the container target.
+		if hp := path.Clean(out.HostPath); hp != "" && hp != "." {
+			out.HostPath = hp
+			out.Target = hp
+		} else {
+			out.Target = cacheTarget(&out)
+		}
 	} else {
 		out.HostPath = ""
+		out.Target = cacheTarget(&out)
 	}
 	return &out
+}
+
+// resolveCacheEffective returns the absolute path workflows should use (RUNNER_CACHE).
+func resolveCacheEffective(c *store.CacheConfig) string {
+	if c == nil || !c.Enabled {
+		return ""
+	}
+	if cacheType(c) == "bind" {
+		return path.Clean(strings.TrimSpace(c.HostPath))
+	}
+	return path.Clean(cacheTarget(c))
 }
 
 func validateCache(c *store.CacheConfig) error {
@@ -126,31 +144,20 @@ func validateCache(c *store.CacheConfig) error {
 }
 
 // Soft advisory copy (keep in sync with frontend cacheSiblingPathWarning).
-const (
-	cacheBindPathMismatchFmt = "cache bind host_path %q differs from target %q; sibling Docker and Buildx type=local that use %q on the Docker host will not see this bind unless the host also exposes that same directory at %q (same-path rule). Prefer host_path equal to target (commonly both /cache)."
-	cacheVolumeSiblingFmt    = "cache uses a named volume mounted at %q; sibling Docker and Buildx type=local that bind-mount %q on the Docker host will not see this volume. Prefer a host bind with host_path equal to target (commonly both /cache) when workflows need that."
-)
+const cacheVolumeSiblingFmt = "cache uses a named volume mounted at %q; sibling Docker and Buildx type=local that bind-mount that path on the Docker host will not see this volume. Prefer a host bind (same-path) and use $RUNNER_CACHE in workflows when sibling visibility is required."
 
 // cacheSiblingWarnings returns soft operator warnings for cache mounts that will
-// confuse sibling Docker / Buildx when workflows use the cache target as a host path.
-// Never fails validation — mismatched binds and named volumes remain allowed.
+// confuse sibling Docker / Buildx. Bind mounts are always same-path after normalize.
+// Never fails validation — named volumes remain allowed.
 func cacheSiblingWarnings(c *store.CacheConfig) []string {
 	if c == nil || !c.Enabled {
 		return nil
 	}
-	target := path.Clean(cacheTarget(c))
-	switch cacheType(c) {
-	case "bind":
-		host := path.Clean(strings.TrimSpace(c.HostPath))
-		if host == "" || host == "." || host == target {
-			return nil
-		}
-		return []string{fmt.Sprintf(cacheBindPathMismatchFmt, host, target, target, target)}
-	case "volume":
-		return []string{fmt.Sprintf(cacheVolumeSiblingFmt, target, target)}
-	default:
+	if cacheType(c) != "volume" {
 		return nil
 	}
+	target := path.Clean(cacheTarget(c))
+	return []string{fmt.Sprintf(cacheVolumeSiblingFmt, target)}
 }
 
 func validateMountPath(p, label string) error {
@@ -176,19 +183,19 @@ func validateMountPath(p, label string) error {
 func buildExtraMounts(rec store.Runner, workdirBind string) []mount.Mount {
 	var mounts []mount.Mount
 	if rec.Cache != nil && rec.Cache.Enabled {
-		target := cacheTarget(rec.Cache)
 		if cacheType(rec.Cache) == "bind" {
+			hp := path.Clean(strings.TrimSpace(rec.Cache.HostPath))
 			mounts = append(mounts, mount.Mount{
 				Type:     mount.TypeBind,
-				Source:   strings.TrimSpace(rec.Cache.HostPath),
-				Target:   target,
+				Source:   hp,
+				Target:   hp,
 				ReadOnly: rec.Cache.ReadOnly,
 			})
 		} else {
 			mounts = append(mounts, mount.Mount{
 				Type:     mount.TypeVolume,
 				Source:   resolveCacheVolumeName(rec),
-				Target:   target,
+				Target:   cacheTarget(rec.Cache),
 				ReadOnly: rec.Cache.ReadOnly,
 			})
 		}

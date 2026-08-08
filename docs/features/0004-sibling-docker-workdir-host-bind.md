@@ -61,5 +61,5 @@ Jobs that select this runner when online (API list → fail open to `ubuntu-late
 
 ## Related
 
-- [0003 Persistent Runner Cache](0003-persistent-runner-cache.md) — same-path rule also applies to cache binds when workflows/Buildx use the cache target as a host path
+- [0006 Same-path build cache](0006-same-path-build-cache.md) — cache binds follow the same same-path + `RUNNER_CACHE` model
 - [Container runtime](../patterns/container-runtime.md)

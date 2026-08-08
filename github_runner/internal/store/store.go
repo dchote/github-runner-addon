@@ -14,12 +14,14 @@ var ErrConflict = errors.New("runner name already exists")
 const SchemaVersion = 4
 
 // CacheConfig is an optional persistent cache mount for job tooling / build caches.
+// For type=bind, HostPath is same-path mounted and Target is normalized to HostPath.
+// RUNNER_CACHE is injected from the effective path (see resolveCacheEffective).
 type CacheConfig struct {
 	Enabled    bool   `json:"enabled"`
-	Type       string `json:"type,omitempty"`        // volume | bind; default volume when enabled
+	Type       string `json:"type,omitempty"`        // volume | bind; API default volume when enabled (UI defaults to bind)
 	VolumeName string `json:"volume_name,omitempty"` // named volume; empty → gha-runner-<name>-cache
-	HostPath   string `json:"host_path,omitempty"`   // Docker host path when type=bind
-	Target     string `json:"target,omitempty"`      // container path; default /cache
+	HostPath   string `json:"host_path,omitempty"`   // Docker host path when type=bind (same-path mount)
+	Target     string `json:"target,omitempty"`      // container path; volume default /cache; bind coerced to host_path
 	ReadOnly   bool   `json:"read_only,omitempty"`
 }
 

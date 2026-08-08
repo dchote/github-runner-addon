@@ -33,8 +33,13 @@ func TestHostDirBindRoot(t *testing.T) {
 		{"/srv/gha-work/lab", "/srv", "gha-work/lab"},
 		{"/srv", "/srv", "."},
 		{"/mnt/data/x", "/mnt", "data/x"},
+		{"/scratch/build-cache/proj", "/scratch", "build-cache/proj"},
+		{"/media/usb0/ci-cache", "/media", "usb0/ci-cache"},
+		{"/run/media/user/DISK/cache", "/run", "media/user/DISK/cache"},
+		{"/Volumes/SSD/build", "/Volumes", "SSD/build"},
 		{"/opt/runners/a", "/opt", "runners/a"},
-		{"/custom/path", "/", "custom/path"},
+		{"/custom/path", "/custom", "path"},
+		{"/weird-mount-point", "/weird-mount-point", "."},
 	}
 	for _, tc := range cases {
 		root, rel := hostDirBindRoot(tc.in)

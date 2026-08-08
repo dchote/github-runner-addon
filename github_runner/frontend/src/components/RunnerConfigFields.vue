@@ -115,9 +115,10 @@
       @update:model-value="$emit('update:cacheEnabled', $event)"
     />
     <p class="text-body-small brand-text-muted mb-3">
-      Mount a durable cache (default /cache). Prefer a Docker volume on HAOS when workflows do not
-      need sibling Docker/Buildx host binds of that path; use a host path for dedicated disks and
-      sibling access. Same volume name or host path on multiple runners shares the cache.
+      Mount a durable cache. Prefer a host path (same-path bind) for sibling Docker/Buildx —
+      any absolute Docker-host path works (SSD, USB, etc.). Use a Docker volume on HAOS when
+      sibling host binds are not required. Workflows should use <code>$RUNNER_CACHE</code>.
+      Same host path or volume name on multiple runners shares the cache.
     </p>
     <template v-if="cacheEnabled">
       <v-select
@@ -137,7 +138,7 @@
         :model-value="cacheVolumeName"
         class="mb-4"
         label="Cache volume name (optional)"
-        hint="Empty uses gha-runner-<name>-cache; reuse the same name to share. Named volumes are not visible to sibling host binds of the mount path."
+        hint="Empty uses gha-runner-<name>-cache; reuse the same name to share. Named volumes are not visible to sibling host binds."
         persistent-hint
         variant="outlined"
         density="comfortable"
@@ -150,8 +151,8 @@
         v-else
         :model-value="cacheHostPath"
         class="mb-4"
-        label="Host path"
-        hint="Docker host path. For sibling Docker/Buildx that use the mount path on the host, set this equal to Cache mount path (commonly both /cache)."
+        label="Cache host path"
+        hint="Any absolute Docker-host path; same-path mounted into the runner (e.g. /media/usb0/ci-cache). Injected as RUNNER_CACHE."
         persistent-hint
         variant="outlined"
         density="comfortable"
@@ -161,10 +162,11 @@
         @update:model-value="$emit('update:cacheHostPath', $event)"
       />
       <v-text-field
+        v-if="cacheType === 'volume'"
         :model-value="cacheTarget"
         class="mb-4"
         label="Cache mount path"
-        hint="Container path (default /cache). Prefer matching Host path for sibling Docker."
+        hint="Container path for the named volume (default /cache)."
         persistent-hint
         variant="outlined"
         density="comfortable"
@@ -231,8 +233,8 @@ const sockItems = [
 ]
 
 const cacheTypeItems = [
-  { title: 'Docker volume', value: 'volume' },
   { title: 'Host path (bind)', value: 'bind' },
+  { title: 'Docker volume', value: 'volume' },
 ]
 
 const props = defineProps({
@@ -244,7 +246,7 @@ const props = defineProps({
   extraEnvText: { type: String, default: '' },
   mountDockerSock: { type: [Boolean, null], default: null },
   cacheEnabled: { type: Boolean, default: false },
-  cacheType: { type: String, default: 'volume' },
+  cacheType: { type: String, default: 'bind' },
   cacheVolumeName: { type: String, default: '' },
   cacheHostPath: { type: String, default: '' },
   cacheTarget: { type: String, default: '/cache' },
@@ -281,15 +283,11 @@ const cachePathWarning = computed(() =>
   cacheSiblingPathWarning({
     enabled: props.cacheEnabled,
     type: props.cacheType,
-    hostPath: props.cacheHostPath,
     target: props.cacheTarget,
   }),
 )
 
 function onCacheType(next) {
   emit('update:cacheType', next)
-  if (next === 'bind' && !String(props.cacheHostPath || '').trim()) {
-    emit('update:cacheHostPath', String(props.cacheTarget || '').trim() || '/cache')
-  }
 }
 </script>

@@ -98,8 +98,8 @@ func (m *Manager) seedIdleJobStatus(ctx context.Context, workdir string) error {
 	return nil
 }
 
-func (m *Manager) applyJobStatus(ctx context.Context, v *View, containerRef, workdir string) {
-	data, err := m.readJobStatusBytes(ctx, containerRef, workdir)
+func (m *Manager) applyJobStatus(ctx context.Context, v *View, containerRef, workdir string, live bool) {
+	data, err := m.readJobStatusBytes(ctx, containerRef, workdir, live)
 	if err != nil {
 		if !isJobStatusMissing(err) && !docker.IsContextError(err) {
 			slog.Debug("job status read failed", "container", containerRef, "err", err)
@@ -123,7 +123,7 @@ func (m *Manager) errIfBusy(ctx context.Context, rec store.Runner) error {
 		return nil
 	}
 	m.invalidateJobStatusCache(workdir)
-	data, err := m.readJobStatusBytes(ctx, rec.ContainerName, workdir)
+	data, err := m.readJobStatusBytes(ctx, rec.ContainerName, workdir, true)
 	if err != nil {
 		// Missing/unreadable status: fail open (same as unknown in the UI).
 		return nil
@@ -151,7 +151,7 @@ func (m *Manager) errIfBusy(ctx context.Context, rec store.Runner) error {
 	return fmt.Errorf("%w: refuse recreate/delete/apply while busy (%s); wait for the job to finish or stop the runner first", ErrRunnerBusy, detail)
 }
 
-func (m *Manager) readJobStatusBytes(ctx context.Context, containerRef, workdir string) ([]byte, error) {
+func (m *Manager) readJobStatusBytes(ctx context.Context, containerRef, workdir string, live bool) ([]byte, error) {
 	statusPath := jobStatusHostPath(workdir)
 	if cached, ok := m.getCachedJobStatus(statusPath); ok {
 		if cached.miss {
@@ -163,20 +163,28 @@ func (m *Manager) readJobStatusBytes(ctx context.Context, containerRef, workdir 
 		return cached.raw, nil
 	}
 
-	data, err := m.fetchJobStatusBytes(ctx, containerRef, statusPath)
+	data, err := m.fetchJobStatusBytes(ctx, containerRef, statusPath, live)
 	m.putCachedJobStatus(statusPath, data, err)
 	return data, err
 }
 
-func (m *Manager) fetchJobStatusBytes(ctx context.Context, containerRef, statusPath string) ([]byte, error) {
+// fetchJobStatusBytes reads status.json. List mode (live=false) uses cache +
+// CopyFromContainer only — no alpine host-file helpers (avoids N helper storms).
+// Get/lifecycle (live=true) may fall back to ReadHostFile.
+func (m *Manager) fetchJobStatusBytes(ctx context.Context, containerRef, statusPath string, live bool) ([]byte, error) {
 	if containerRef != "" && m.Docker != nil {
 		data, err := m.Docker.ReadContainerFile(ctx, containerRef, statusPath)
 		if err == nil {
 			return data, nil
 		}
+		if !live {
+			return nil, err
+		}
 		if !isJobStatusMissing(err) && !docker.IsContextError(err) {
 			slog.Debug("CopyFromContainer job status failed; trying host read", "path", statusPath, "err", err)
 		}
+	} else if !live {
+		return nil, docker.ErrHostFileNotFound
 	}
 	wh := m.workdirHostOrDocker()
 	if wh == nil {

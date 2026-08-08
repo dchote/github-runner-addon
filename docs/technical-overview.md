@@ -58,6 +58,7 @@ Creating a runner:
 4. Create named volume + containers from configured runner image (default **`myoung34/github-runner`**) with env understood by that image’s entrypoint:
    `REPO_URL` / `ORG_NAME`, `RUNNER_NAME`, `RUNNER_TOKEN` (configure phase only), `LABELS`,
    `CONFIGURED_ACTIONS_RUNNER_FILES_DIR`, `RUNNER_SCOPE`,
+   `RUNNER_WORKDIR` (same-path host bind), `RUNNER_CACHE` (when cache enabled),
    `DISABLE_AUTO_UPDATE`, `DISABLE_AUTOMATIC_DEREGISTRATION`,
    `ACTIONS_RUNNER_HOOK_JOB_STARTED`, `ACTIONS_RUNNER_HOOK_JOB_COMPLETED`
    (the deregistration flag is required with reusage or the image entrypoint exits 1;
@@ -66,7 +67,7 @@ Creating a runner:
 6. Configure-only start (`DEBUG_ONLY=true` + token) until `.runner` is on the volume; on failure roll back.
 7. Start the long-running listener **without** `RUNNER_TOKEN` (registration files remain on the volume).
 
-List merges JSON records with Docker inspect status (`missing` when the container is absent). When the container is running, enrich also reads local job-hook `status.json` (`job_state` / `current_job`). Startup/periodic reconcile does not mutate the store for missing containers; it inventories unmanaged labeled **orphan** containers (no matching store row) and exposes them on `/api/v1/health`.
+List merges JSON records with a single batched `ListManaged` (label filter) plus parallel enrich — not N× `InspectByName`. Missing containers report `missing`; when Docker is unavailable, status stays `unknown`. Running containers get `job_state` / `current_job` from cached/`CopyFromContainer` `status.json` only (no alpine host-file helpers on List). Get/lifecycle may fall back to host reads. Health uses cheap `StatusCounts` (same ListManaged path, no job-status). Bind caches inject `RUNNER_CACHE`; views expose `cache_effective`. Startup/periodic reconcile does not mutate the store for missing containers; it inventories unmanaged labeled **orphan** containers (no matching store row) and exposes them on `/api/v1/health`.
 
 Upstream image behavior (tools inside the container, registration edge cases, OS packages) is documented in [myoung34/docker-github-actions-runner](https://github.com/myoung34/docker-github-actions-runner). Prefer pinning `RUNNER_IMAGE` to a digest.
 
@@ -78,7 +79,7 @@ Default listen: `:8099` (`HTTP_PORT` / `-http-port`). HA ingress uses the same p
 
 Use the standard app data directory `/data` for `runners.json`. It is always available to HA apps, included in backups, and does not need an extra `map:` entry. App options (`log_level`, `mount_docker_sock`, `runner_image`, `github_pat`) are read from `/data/options.json` by the s6 service `rootfs/etc/services.d/github-runner/run` (via `with-contenv`).
 
-Runner **registration** lives in Docker named volumes (`gha-runner-*-data`), not in `/data`. Job workdir is a **host directory** same-path bind (default `/srv/gha-work/<name>`, override `workdir_host_path`) as `RUNNER_WORKDIR`. The agent `workFolder` in `.runner` is set only at configure time — recreate clears `.runner` and reconfigures when it mismatches; create/recreate assert the match and return an error on failure. Optional **cache** mounts (schema v4) are separate named volumes or host binds — large volumes will not appear in HA addon backups. Prefer named volumes for cache on HAOS when sibling host binds of the target path are not required; for sibling Docker / Buildx `type=local`, prefer bind with `host_path` = `target` (soft `warnings[]` when they differ). See [0003](features/0003-persistent-runner-cache.md) and [0004](features/0004-sibling-docker-workdir-host-bind.md).
+Runner **registration** lives in Docker named volumes (`gha-runner-*-data`), not in `/data`. Job workdir is a **host directory** same-path bind (default `/srv/gha-work/<name>`, override `workdir_host_path`) as `RUNNER_WORKDIR`. The agent `workFolder` in `.runner` is set only at configure time — recreate clears `.runner` and reconfigures when it mismatches; create/recreate assert the match and return an error on failure. Optional **cache** mounts (schema v4) are host same-path binds (UI default) or named volumes — large volumes will not appear in HA addon backups. Bind caches inject `RUNNER_CACHE` at the host path; named volumes warn that siblings cannot see them. See [0003](features/0003-persistent-runner-cache.md), [0006](features/0006-same-path-build-cache.md), and [0004](features/0004-sibling-docker-workdir-host-bind.md).
 
 ## Home Assistant ingress
 

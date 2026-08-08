@@ -36,6 +36,35 @@ func TestValidateCacheBind(t *testing.T) {
 	}
 }
 
+func TestNormalizeCacheBindSamePath(t *testing.T) {
+	c := normalizeCache(&store.CacheConfig{
+		Enabled:  true,
+		Type:     "bind",
+		HostPath: "/scratch/build-cache/proj",
+		Target:   "/cache",
+	})
+	if c == nil || c.HostPath != "/scratch/build-cache/proj" || c.Target != "/scratch/build-cache/proj" {
+		t.Fatalf("expected same-path coerce, got %+v", c)
+	}
+	if c.VolumeName != "" {
+		t.Fatalf("bind should clear volume_name: %+v", c)
+	}
+}
+
+func TestResolveCacheEffective(t *testing.T) {
+	if got := resolveCacheEffective(nil); got != "" {
+		t.Fatalf("nil: %q", got)
+	}
+	bind := &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/scratch/x", Target: "/cache"}
+	if got := resolveCacheEffective(bind); got != "/scratch/x" {
+		t.Fatalf("bind: %q", got)
+	}
+	vol := &store.CacheConfig{Enabled: true, Type: "volume", Target: "/cache"}
+	if got := resolveCacheEffective(vol); got != "/cache" {
+		t.Fatalf("volume: %q", got)
+	}
+}
+
 func TestCacheSiblingWarnings(t *testing.T) {
 	if got := cacheSiblingWarnings(nil); got != nil {
 		t.Fatalf("nil cache: %v", got)
@@ -44,22 +73,18 @@ func TestCacheSiblingWarnings(t *testing.T) {
 	if got := cacheSiblingWarnings(same); got != nil {
 		t.Fatalf("same-path bind should not warn: %v", got)
 	}
-	sameSlash := &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/cache/", Target: "/cache"}
-	if got := cacheSiblingWarnings(sameSlash); got != nil {
-		t.Fatalf("cleaned same-path should not warn: %v", got)
-	}
+	// After normalize, mismatch is coerced; raw mismatch also must not warn (binds never warn).
 	mismatch := &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/srv/runner-cache", Target: "/cache"}
-	got := cacheSiblingWarnings(mismatch)
-	if len(got) != 1 {
-		t.Fatalf("expected one warning, got %v", got)
-	}
-	if !strings.Contains(got[0], "/srv/runner-cache") || !strings.Contains(got[0], "same-path") {
-		t.Fatalf("unexpected warning text: %s", got[0])
+	if got := cacheSiblingWarnings(mismatch); got != nil {
+		t.Fatalf("bind should not warn: %v", got)
 	}
 	vol := &store.CacheConfig{Enabled: true, Type: "volume", Target: "/cache"}
 	gotVol := cacheSiblingWarnings(vol)
 	if len(gotVol) != 1 || !strings.Contains(gotVol[0], "named volume") {
 		t.Fatalf("expected named-volume sibling warning, got %v", gotVol)
+	}
+	if !strings.Contains(gotVol[0], "RUNNER_CACHE") {
+		t.Fatalf("volume warning should mention RUNNER_CACHE: %s", gotVol[0])
 	}
 }
 
@@ -75,11 +100,18 @@ func TestEnrichAttachesCacheWarnings(t *testing.T) {
 		},
 	}
 	v := m.enrich(context.Background(), rec, enrichOpts{})
-	if len(v.Warnings) != 1 {
-		t.Fatalf("expected one warning on View, got %v", v.Warnings)
+	if len(v.Warnings) != 0 {
+		t.Fatalf("bind should have no warnings, got %v", v.Warnings)
 	}
-	if !strings.Contains(v.Warnings[0], "same-path") {
-		t.Fatalf("unexpected warning: %s", v.Warnings[0])
+	if v.CacheEffective != "/srv/runner-cache" {
+		t.Fatalf("cache_effective=%q", v.CacheEffective)
+	}
+	// Coerce-on-read: View cache.target matches host_path without store rewrite.
+	if v.Cache == nil || v.Cache.Target != "/srv/runner-cache" {
+		t.Fatalf("expected same-path coerce on View, got %+v", v.Cache)
+	}
+	if rec.Cache.Target != "/cache" {
+		t.Fatalf("store record must stay unchanged, got target=%q", rec.Cache.Target)
 	}
 
 	rec.Cache = &store.CacheConfig{Enabled: true, Type: "volume", Target: "/cache"}
@@ -87,11 +119,8 @@ func TestEnrichAttachesCacheWarnings(t *testing.T) {
 	if len(v.Warnings) != 1 || !strings.Contains(v.Warnings[0], "named volume") {
 		t.Fatalf("expected volume warning on View, got %v", v.Warnings)
 	}
-
-	rec.Cache = &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/cache", Target: "/cache"}
-	v = m.enrich(context.Background(), rec, enrichOpts{})
-	if len(v.Warnings) != 0 {
-		t.Fatalf("same-path bind should have no warnings, got %v", v.Warnings)
+	if v.CacheEffective != "/cache" {
+		t.Fatalf("volume cache_effective=%q", v.CacheEffective)
 	}
 }
 
@@ -134,6 +163,25 @@ func TestBuildExtraMounts(t *testing.T) {
 	}
 }
 
+func TestBuildExtraMountsBindSamePath(t *testing.T) {
+	rec := store.Runner{
+		ContainerName: "gha-runner-lab",
+		Cache: &store.CacheConfig{
+			Enabled:  true,
+			Type:     "bind",
+			HostPath: "/scratch/build-cache/lab",
+			Target:   "/cache", // ignored for mounts; same-path uses host
+		},
+	}
+	mounts := buildExtraMounts(rec, "/srv/gha-work/lab")
+	if len(mounts) != 2 {
+		t.Fatalf("len=%d", len(mounts))
+	}
+	if mounts[0].Type != mount.TypeBind || mounts[0].Source != "/scratch/build-cache/lab" || mounts[0].Target != "/scratch/build-cache/lab" {
+		t.Fatalf("cache bind: %+v", mounts[0])
+	}
+}
+
 func TestBuildExtraMountsEmptyWorkdir(t *testing.T) {
 	rec := store.Runner{ContainerName: "gha-runner-lab"}
 	mounts := buildExtraMounts(rec, "")
@@ -148,10 +196,24 @@ func TestStopTimeoutSecs(t *testing.T) {
 	}
 }
 
-func TestBuildEnvWorkdir(t *testing.T) {
+func TestBuildEnvWorkdirAndCache(t *testing.T) {
 	m := &Manager{}
-	env := m.buildEnv(store.Runner{Name: "n", Scope: "repo", URL: "https://github.com/a/b", Labels: []string{"self-hosted"}}, "", "", "/srv/gha-work/n", false)
-	if !strings.Contains(strings.Join(env, "\n"), "RUNNER_WORKDIR=/srv/gha-work/n") {
+	rec := store.Runner{
+		Name:   "n",
+		Scope:  "repo",
+		URL:    "https://github.com/a/b",
+		Labels: []string{"self-hosted"},
+		Cache: &store.CacheConfig{
+			Enabled:  true,
+			Type:     "bind",
+			HostPath: "/scratch/build-cache/n",
+		},
+	}
+	env := strings.Join(m.buildEnv(rec, "", "", "/srv/gha-work/n", false), "\n")
+	if !strings.Contains(env, "RUNNER_WORKDIR=/srv/gha-work/n") {
+		t.Fatal(env)
+	}
+	if !strings.Contains(env, "RUNNER_CACHE=/scratch/build-cache/n") {
 		t.Fatal(env)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -17,6 +19,8 @@ import (
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"golang.org/x/sync/semaphore"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -27,11 +31,28 @@ const (
 	// already canceled (client disconnect / request timeout) but the daemon may
 	// have completed the work.
 	opTimeout = 45 * time.Second
+
+	// Cap concurrent one-shot alpine helpers so lifecycle storms cannot starve List.
+	maxConcurrentHelpers = 4
+
+	inspectCacheTTL = 2 * time.Second
 )
 
 // Client wraps the Docker Engine API.
 type Client struct {
 	cli *client.Client
+
+	helperSem *semaphore.Weighted
+
+	inspectSF    singleflight.Group
+	inspectCache sync.Map // name -> inspectCacheEntry
+	inspectGens  sync.Map // name -> *atomic.Uint64 (bumped on invalidate)
+}
+
+type inspectCacheEntry struct {
+	info    InspectInfo
+	expires time.Time
+	gen     uint64
 }
 
 func New() (*Client, error) {
@@ -39,7 +60,10 @@ func New() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{cli: cli}, nil
+	return &Client{
+		cli:       cli,
+		helperSem: semaphore.NewWeighted(maxConcurrentHelpers),
+	}, nil
 }
 
 func (c *Client) Close() error {
@@ -204,12 +228,14 @@ func (c *Client) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 		if IsContextError(err) {
 			if startErr := c.startByIDDetached(resp.ID); startErr == nil {
 				slog.Warn("container start recovered after context cancel", "name", opts.Name, "id", resp.ID)
+				c.InvalidateInspect(opts.Name)
 				return resp.ID, nil
 			}
 		}
 		_ = c.removeByIDDetached(resp.ID)
 		return "", err
 	}
+	c.InvalidateInspect(opts.Name)
 	return resp.ID, nil
 }
 
@@ -237,6 +263,7 @@ func (c *Client) adoptExisting(opts CreateOpts, createErr error) (string, error)
 			return "", fmt.Errorf("start adopted container: %w", err)
 		}
 	}
+	c.InvalidateInspect(opts.Name)
 	slog.Warn("adopted existing container after create race",
 		"name", opts.Name,
 		"id", info.ID,
@@ -282,6 +309,34 @@ type InspectInfo struct {
 }
 
 func (c *Client) InspectByName(ctx context.Context, name string) (InspectInfo, error) {
+	if c == nil {
+		return InspectInfo{Name: name}, fmt.Errorf("docker client nil")
+	}
+	if v, ok := c.getInspectCache(name); ok {
+		return v, nil
+	}
+	// Coalesce concurrent inspects per (name, generation). Invalidate bumps
+	// generation so in-flight puts cannot re-poison the cache, and new callers
+	// start a fresh flight instead of sharing a stale one.
+	gen := c.inspectGen(name)
+	key := fmt.Sprintf("%s#%d", name, gen)
+	v, err, _ := c.inspectSF.Do(key, func() (any, error) {
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		info, err := c.inspectByNameUncached(dctx, name)
+		if err == nil {
+			c.putInspectCache(name, info, gen)
+		}
+		return info, err
+	})
+	if err != nil {
+		return InspectInfo{Name: name}, err
+	}
+	info, _ := v.(InspectInfo)
+	return info, nil
+}
+
+func (c *Client) inspectByNameUncached(ctx context.Context, name string) (InspectInfo, error) {
 	info := InspectInfo{Name: name}
 	cj, err := c.cli.ContainerInspect(ctx, name)
 	if err != nil {
@@ -304,6 +359,50 @@ func (c *Client) InspectByName(ctx context.Context, name string) (InspectInfo, e
 		}
 	}
 	return info, nil
+}
+
+func (c *Client) inspectGen(name string) uint64 {
+	v, _ := c.inspectGens.LoadOrStore(name, new(atomic.Uint64))
+	return v.(*atomic.Uint64).Load()
+}
+
+func (c *Client) bumpInspectGen(name string) uint64 {
+	v, _ := c.inspectGens.LoadOrStore(name, new(atomic.Uint64))
+	return v.(*atomic.Uint64).Add(1)
+}
+
+func (c *Client) getInspectCache(name string) (InspectInfo, bool) {
+	v, ok := c.inspectCache.Load(name)
+	if !ok {
+		return InspectInfo{}, false
+	}
+	ent := v.(inspectCacheEntry)
+	if time.Now().After(ent.expires) || ent.gen != c.inspectGen(name) {
+		c.inspectCache.Delete(name)
+		return InspectInfo{}, false
+	}
+	return ent.info, true
+}
+
+func (c *Client) putInspectCache(name string, info InspectInfo, gen uint64) {
+	if c.inspectGen(name) != gen {
+		return // invalidated while inspect was in flight
+	}
+	c.inspectCache.Store(name, inspectCacheEntry{
+		info:    info,
+		expires: time.Now().Add(inspectCacheTTL),
+		gen:     gen,
+	})
+}
+
+// InvalidateInspect drops cached inspect data after lifecycle mutations and
+// bumps the per-name generation so in-flight singleflight puts are discarded.
+func (c *Client) InvalidateInspect(name string) {
+	if c == nil || name == "" {
+		return
+	}
+	c.inspectCache.Delete(name)
+	c.bumpInspectGen(name)
 }
 
 // ManagedContainer is a Docker container labeled as managed by this addon.
@@ -341,7 +440,9 @@ func (c *Client) ListManaged(ctx context.Context) ([]ManagedContainer, error) {
 }
 
 func (c *Client) Start(ctx context.Context, name string) error {
-	return c.cli.ContainerStart(ctx, name, container.StartOptions{})
+	err := c.cli.ContainerStart(ctx, name, container.StartOptions{})
+	c.InvalidateInspect(name)
+	return err
 }
 
 const defaultStopTimeoutSecs = 30
@@ -357,13 +458,17 @@ func (c *Client) StopTimeout(ctx context.Context, name string, secs int) error {
 	if secs <= 0 {
 		secs = c.lookupStopTimeout(ctx, name)
 	}
-	return c.cli.ContainerStop(ctx, name, container.StopOptions{Timeout: &secs})
+	err := c.cli.ContainerStop(ctx, name, container.StopOptions{Timeout: &secs})
+	c.InvalidateInspect(name)
+	return err
 }
 
 // Restart restarts the container using Config.StopTimeout when set, otherwise 30s.
 func (c *Client) Restart(ctx context.Context, name string) error {
 	secs := c.lookupStopTimeout(ctx, name)
-	return c.cli.ContainerRestart(ctx, name, container.StopOptions{Timeout: &secs})
+	err := c.cli.ContainerRestart(ctx, name, container.StopOptions{Timeout: &secs})
+	c.InvalidateInspect(name)
+	return err
 }
 
 func (c *Client) lookupStopTimeout(ctx context.Context, name string) int {
@@ -397,6 +502,7 @@ func (c *Client) RemoveContainerTimeout(ctx context.Context, name string, secs i
 			return err
 		}
 	}
+	c.InvalidateInspect(name)
 	return nil
 }
 

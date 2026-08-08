@@ -18,6 +18,9 @@ func TestValidateExtraEnv(t *testing.T) {
 	if err := validateExtraEnv(map[string]string{"RUNNER_TOKEN": "x"}); err == nil {
 		t.Fatal("expected reserved key error")
 	}
+	if err := validateExtraEnv(map[string]string{"RUNNER_CACHE": "/scratch/x"}); err == nil {
+		t.Fatal("expected reserved RUNNER_CACHE")
+	}
 }
 
 func TestNormalizeLabels(t *testing.T) {

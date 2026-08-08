@@ -9,30 +9,18 @@ import (
 	"github.com/docker/docker/api/types/mount"
 )
 
-// Preferred bind roots for EnsureHostDir (narrowest matching prefix wins).
-// Avoid binding "/" unless the path is outside these roots.
-var ensureHostDirRoots = []string{
-	"/srv",
-	"/mnt",
-	"/data",
-	"/home",
-	"/opt",
-	"/var",
-}
-
 // EnsureHostDir creates dir on the Docker host (mkdir -p) so bind mounts succeed.
 // Modern Docker rejects bind sources that do not exist. The addon cannot mkdir on
-// the host directly, so this uses a one-shot helper that bind-mounts the narrowest
-// known root containing the path (falling back to "/").
+// the host directly, so this uses a one-shot helper that bind-mounts the top-level
+// directory of the path (via hostBindPaths) — any absolute host path works,
+// including arbitrary USB/SSD mount points.
+//
+// Note: if the mount point is not present yet, mkdir -p may create a real directory
+// that later shadows a removable drive mount — ensure the device is mounted first.
 func (c *Client) EnsureHostDir(ctx context.Context, hostPath string) error {
-	hostPath, err := sanitizeHostPath(hostPath)
+	root, containerPath, err := hostBindPaths(hostPath)
 	if err != nil {
 		return err
-	}
-	root, rel := hostDirBindRoot(hostPath)
-	containerPath := path.Join("/host", rel)
-	if rel == "" || rel == "." {
-		containerPath = "/host"
 	}
 
 	out, code, err := c.runHelper(ctx, []mount.Mount{{
@@ -63,17 +51,26 @@ func sanitizeHostPath(hostPath string) (string, error) {
 
 // hostDirBindRoot returns the host directory to bind and the path relative to it
 // for mkdir inside the helper (joined under /host).
+//
+// For any absolute path, the top-level directory is used as the bind root so
+// operators can place caches on arbitrary mounts without an allowlist:
+//
+//	/scratch/build-cache/proj  → root=/scratch, rel=build-cache/proj
+//	/media/usb0/ci-cache       → root=/media,   rel=usb0/ci-cache
 func hostDirBindRoot(hostPath string) (root, rel string) {
 	hostPath = path.Clean(hostPath)
-	for _, candidate := range ensureHostDirRoots {
-		if hostPath == candidate {
-			return candidate, "."
-		}
-		prefix := candidate + "/"
-		if strings.HasPrefix(hostPath, prefix) {
-			return candidate, strings.TrimPrefix(hostPath, prefix)
-		}
+	if hostPath == "/" {
+		return "/", "."
 	}
-	// Last resort: bind "/" and mkdir the absolute path under /host.
-	return "/", strings.TrimPrefix(hostPath, "/")
+	rest := strings.TrimPrefix(hostPath, "/")
+	i := strings.IndexByte(rest, '/')
+	if i < 0 {
+		return hostPath, "."
+	}
+	root = "/" + rest[:i]
+	rel = rest[i+1:]
+	if rel == "" {
+		rel = "."
+	}
+	return root, rel
 }

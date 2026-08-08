@@ -415,6 +415,9 @@ components:
         workdir_error:
           type: string
           description: Present when reading .runner failed
+        cache_effective:
+          type: string
+          description: Resolved cache path injected as RUNNER_CACHE (bind host_path or volume target)
         warnings:
           type: array
           items:
@@ -432,29 +435,30 @@ components:
       type: object
       description: |
         Optional persistent cache mount. Use the same volume_name (or host_path)
-        on multiple runners to share a cache. Prefer named volumes on HAOS;
-        bind mounts use Docker host paths (not paths inside the addon container).
+        on multiple runners to share a cache. UI defaults to host bind; API omit-type
+        default remains volume for compatibility. Bind mounts use Docker host paths
+        (not paths inside the addon container) and are always same-path (target
+        coerced to host_path). The runner container receives RUNNER_CACHE with the
+        effective path for workflows and Buildx type=local.
 
-        Sibling Docker / Buildx type=local that reference the cache target as a
-        host path require a same-path bind (host_path equal to target, commonly
-        both /cache). A mismatched bind or a named volume is allowed but surfaces
-        soft warnings[] (sibling host binds will not see the cache).
+        Named volumes are allowed but surface soft warnings[] — sibling Docker host
+        binds cannot see named volumes.
       properties:
         enabled:
           type: boolean
         type:
           type: string
           enum: [volume, bind]
-          description: Default volume when enabled
+          description: API default volume when enabled; manager UI defaults to bind
         volume_name:
           type: string
           description: Named volume; empty defaults to gha-runner-<name>-cache
         host_path:
           type: string
-          description: Absolute Docker host path when type=bind (prefer equal to target for sibling Docker)
+          description: Absolute Docker host path when type=bind (same-path mount; required)
         target:
           type: string
-          description: Container mount path (default /cache)
+          description: Container mount path for volume mode (default /cache); ignored/coerced for bind
         read_only:
           type: boolean
     RunnerEnvelope:

@@ -1,7 +1,14 @@
 # Changelog
 
+## Unreleased
+
 ## 0.5.3
 
+- **Same-path build cache:** bind mounts always use `host_path` as the container target; inject `RUNNER_CACHE` / expose `cache_effective` for workflows and Buildx `type=local` (see [0006](../docs/features/0006-same-path-build-cache.md))
+- Remove bind `host_path` ≠ `target` mismatch warning (coerced instead); named-volume sibling advisory retained
+- UI: Persistent cache defaults to **host path (bind)**; single host-path field; prefer `$RUNNER_CACHE` in help copy
+- `EnsureHostDir` binds the path’s top-level directory so any absolute host path works (USB, SSD, custom mounts) — no allowlist
+- **Concurrent API scalability:** parallel List enrich (`errgroup`), batched `ListManaged` (skip N inspects), inspect singleflight + generation-gated TTL cache, capped helper concurrency, per-runner lifecycle locks (create holds id lock through start; prune idle `create:` keys), cheap Health `StatusCounts`, List job-status without host helpers, timeout-safe response writer with Unwrap (no superfluous WriteHeader after 504)
 - API rejects recreate / delete / patch-apply while `job_state=busy` (**409 `RUNNER_BUSY`**) so Save & apply cannot kill in-flight builds
 - Stop/restart remain available for emergency intervention; UI busy gating unchanged
 

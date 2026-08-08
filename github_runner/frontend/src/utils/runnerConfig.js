@@ -42,62 +42,84 @@ export function normalizeLabelList(chips) {
     .filter(Boolean)
 }
 
+/**
+ * Align with Go path.Clean for absolute cache paths (slashes, ".", "..").
+ * Exported for tests.
+ */
+export function cleanCachePath(p) {
+  let s = String(p || '').trim()
+  if (!s) return ''
+  const abs = s.startsWith('/')
+  const parts = []
+  for (const part of s.split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..') {
+      if (parts.length) parts.pop()
+      continue
+    }
+    parts.push(part)
+  }
+  if (abs) {
+    return '/' + parts.join('/')
+  }
+  return parts.join('/') || '.'
+}
+
+/** Match Go cacheType: omit/empty type defaults to volume (API); UI create still defaults bind. */
+export function cacheTypeFromRecord(type) {
+  const t = String(type || '')
+    .toLowerCase()
+    .trim()
+  if (!t || t === 'volume') return 'volume'
+  if (t === 'bind') return 'bind'
+  return t
+}
+
 export function cacheFromRunner(runner) {
   const c = runner?.cache
   if (!c || !c.enabled) {
     return {
       enabled: false,
-      type: 'volume',
+      type: 'bind',
       volumeName: '',
       hostPath: '',
       target: '/cache',
       readOnly: false,
     }
   }
+  const type = cacheTypeFromRecord(c.type)
+  const hostPath = type === 'bind' ? cleanCachePath(c.host_path || '') : ''
+  // Bind is always same-path; prefer host_path as the displayed target.
+  const target =
+    type === 'bind'
+      ? hostPath || cleanCachePath(c.target || '')
+      : cleanCachePath(c.target || '') || '/cache'
   return {
     enabled: true,
-    type: c.type === 'bind' ? 'bind' : 'volume',
-    volumeName: c.volume_name || '',
-    hostPath: c.host_path || '',
-    target: c.target || '/cache',
+    type,
+    volumeName: type === 'volume' ? c.volume_name || '' : '',
+    hostPath,
+    target,
     readOnly: !!c.read_only,
   }
 }
 
-/** Align with Go path.Clean for absolute cache paths (trailing slashes). */
-function cleanCachePath(p) {
-  let s = String(p || '').trim()
-  if (!s) return ''
-  while (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1)
-  return s
-}
-
 /**
  * Soft advisory when cache mount will miss sibling Docker / Buildx type=local.
- * Keep wording in sync with github_runner/internal/runner cacheSiblingWarnings (%q → JSON quotes).
+ * Keep wording in sync with github_runner/internal/runner cacheSiblingWarnings.
+ * Bind mounts are always same-path — only named volumes warn.
  */
 export function cacheSiblingPathWarning({
   enabled = false,
-  type = 'volume',
-  hostPath = '',
+  type = 'bind',
   target = '/cache',
 } = {}) {
-  if (!enabled) return ''
+  if (!enabled || type !== 'volume') return ''
   const tg = cleanCachePath(target) || '/cache'
-  if (type === 'volume') {
-    return (
-      `cache uses a named volume mounted at "${tg}"; sibling Docker and Buildx type=local ` +
-      `that bind-mount "${tg}" on the Docker host will not see this volume. Prefer a host bind ` +
-      `with host_path equal to target (commonly both /cache) when workflows need that.`
-    )
-  }
-  if (type !== 'bind') return ''
-  const hp = cleanCachePath(hostPath)
-  if (!hp || hp === tg) return ''
   return (
-    `cache bind host_path "${hp}" differs from target "${tg}"; sibling Docker and Buildx type=local ` +
-    `that use "${tg}" on the Docker host will not see this bind unless the host also exposes that ` +
-    `same directory at "${tg}" (same-path rule). Prefer host_path equal to target (commonly both /cache).`
+    `cache uses a named volume mounted at "${tg}"; sibling Docker and Buildx type=local ` +
+    `that bind-mount that path on the Docker host will not see this volume. Prefer a host bind ` +
+    `(same-path) and use $RUNNER_CACHE in workflows when sibling visibility is required.`
   )
 }
 
@@ -111,7 +133,7 @@ export function buildRuntimePayload({
   extraEnvText,
   mountDockerSock,
   cacheEnabled = false,
-  cacheType = 'volume',
+  cacheType = 'bind',
   cacheVolumeName = '',
   cacheHostPath = '',
   cacheTarget = '/cache',
@@ -135,16 +157,19 @@ export function buildRuntimePayload({
   payload.workdir_host_path = String(workdirHostPath || '').trim()
 
   if (cacheEnabled) {
-    const type = cacheType === 'bind' ? 'bind' : 'volume'
+    const type = cacheType === 'volume' ? 'volume' : 'bind'
     const cache = {
       enabled: true,
       type,
-      target: String(cacheTarget || '/cache').trim() || '/cache',
       read_only: !!cacheReadOnly,
     }
     if (type === 'bind') {
-      cache.host_path = String(cacheHostPath || '').trim()
+      const hp = cleanCachePath(cacheHostPath)
+      cache.host_path = hp
+      // Same-path: API also coerces target = host_path.
+      cache.target = hp
     } else {
+      cache.target = cleanCachePath(cacheTarget) || '/cache'
       const vn = String(cacheVolumeName || '').trim()
       if (vn) cache.volume_name = vn
     }

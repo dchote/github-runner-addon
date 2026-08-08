@@ -16,6 +16,12 @@ import (
 const helperImage = "alpine:3.20"
 
 func (c *Client) runHelper(ctx context.Context, mounts []mount.Mount, cmd []string) (string, int, error) {
+	if c.helperSem != nil {
+		if err := c.helperSem.Acquire(ctx, 1); err != nil {
+			return "", -1, err
+		}
+		defer c.helperSem.Release(1)
+	}
 	if err := c.EnsureImage(ctx, helperImage); err != nil {
 		return "", -1, fmt.Errorf("helper image: %w", err)
 	}
