@@ -36,7 +36,7 @@ RUN go build -tags embed_frontend -ldflags "-s -w" -o /github-runner-addon ./cmd
 FROM ${BUILD_FROM}
 
 # Passed by HA builder / CI (config.yaml version). Local builds default to match DefaultVersion.
-ARG BUILD_VERSION=0.5.3
+ARG BUILD_VERSION=0.6.0
 
 COPY --from=builder /github-runner-addon /usr/bin/github-runner-addon
 COPY rootfs /

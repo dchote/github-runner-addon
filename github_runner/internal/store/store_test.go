@@ -1,6 +1,8 @@
 package store
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -60,6 +62,18 @@ func TestUpdateAndDelete(t *testing.T) {
 	}
 	if _, err := s.Get("1"); err != ErrNotFound {
 		t.Fatalf("expected not found, got %v", err)
+	}
+}
+
+func TestLoadRejectsNewerSchema(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runners.json")
+	if err := os.WriteFile(path, []byte(`{"version":99,"runners":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(path)
+	if err := s.Readable(); !errors.Is(err, ErrSchema) {
+		t.Fatalf("want ErrSchema, got %v", err)
 	}
 }
 

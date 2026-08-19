@@ -11,7 +11,7 @@ It is aimed at home-lab and small-team operators who want persistent self-hosted
 - Persist expected runner configuration in a JSON file; reconcile runtime state from Docker.
 - Stream runner container logs for day-2 diagnostics.
 - Optional **personal access token (PAT)** to mint registration tokens and deregister runners from GitHub on delete.
-- Recreate missing containers from stored config; update labels and runtime limits from the UI.
+- Recreate missing containers from stored config (including after a Docker engine reset); update labels and runtime limits from the UI.
 - Ship as a **single Go binary** with an embedded SPA.
 - Ship as a Home Assistant app: pull from GHCR by default, or build from source on the HA host.
 
@@ -32,7 +32,7 @@ It is aimed at home-lab and small-team operators who want persistent self-hosted
 ## Core User Flows
 
 1. **Create runner** — enter name, GitHub project URL, and either a registration token or rely on a configured PAT; optional labels, runtime limits, cache, and workdir host path (default `/srv/gha-work/<name>`).
-2. **Monitor** — table of local runners with Docker status; when a container is running, status shows job activity (**idle** / **busy** / **unknown**) from local job hooks (no PAT); details show current job fields while busy; start / stop / restart / recreate / delete (UI disables edit / delete / recreate while busy — API is unchanged); orphan-container warnings when present; workdir mismatch when agent `workFolder` ≠ host bind (details pane loads live agent diagnostics; list uses cache).
+2. **Monitor** — table of local runners with Docker status; when a container is running, status shows job activity (**idle** / **busy** / **unknown**) from local job hooks (no PAT); details show current job fields while busy; start / stop / restart / recreate / delete (UI disables edit / delete / recreate while busy; API returns **409 `RUNNER_BUSY`** for recreate / delete / apply while a running runner is busy or idle cannot be verified); **Recreate missing** restores store rows whose containers are gone; orphan-container warnings when present; workdir mismatch when agent `workFolder` ≠ host bind (details pane loads live agent diagnostics; list uses cache).
 3. **Edit** — update labels, image, resources, env, docker-sock override, cache, workdir; apply recreates and reconfigures when workdir must move (edit entry is disabled in the UI while the runner is busy).
 4. **Logs** — view and follow the runner container’s stdout/stderr.
 5. **Delete** — remove local container and registration volume; host workdir trees are left on disk; shared cache volumes only when unreferenced. With PAT, also deregister from GitHub when possible.

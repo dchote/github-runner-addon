@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 const (
 	LabelManaged = "com.github-runner-addon.managed"
 	LabelID      = "com.github-runner-addon.id"
+	LabelHelper  = "com.github-runner-addon.helper"
 
 	// opTimeout is used for follow-up Docker calls when the caller's context is
 	// already canceled (client disconnect / request timeout) but the daemon may
@@ -37,6 +39,13 @@ const (
 
 	inspectCacheTTL = 2 * time.Second
 )
+
+// ErrImageNotFound is returned when the image is not present locally and will
+// not be pulled (missing :local tags, or still missing after a completed pull).
+var ErrImageNotFound = errors.New("image not found")
+
+// ErrImagePull is returned when a registry pull fails (network, auth, or stream error).
+var ErrImagePull = errors.New("image pull failed")
 
 // Client wraps the Docker Engine API.
 type Client struct {
@@ -90,10 +99,36 @@ type CreateOpts struct {
 	ExtraMounts     []mount.Mount // additional volume/bind mounts (cache, workdir)
 	MountDockerSock bool
 	RestartPolicy   string
-	StopTimeout     *int    // seconds; set on container Config (honored by docker stop)
-	CPULimit        float64 // CPUs; 0 = unlimited
-	MemoryLimitMB   int64   // 0 = unlimited
+	Cmd             []string // optional command override (configure phase uses a no-op)
+	StopTimeout     *int     // seconds; set on container Config (honored by docker stop)
+	CPULimit        float64  // CPUs; 0 = unlimited
+	MemoryLimitMB   int64    // 0 = unlimited
 	NetworkMode     string
+	// AllowRunnerToken permits adopting a leftover container whose inspect env
+	// still has RUNNER_TOKEN (configure phase only). The run phase must not adopt
+	// a configure leftover — remove it and retry create instead.
+	AllowRunnerToken bool
+}
+
+// IsLocalOnlyImage reports whether the ref uses a :local tag that must not be pulled.
+func IsLocalOnlyImage(image string) bool {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return false
+	}
+	if i := strings.Index(image, "@"); i >= 0 {
+		image = image[:i]
+	}
+	slash := strings.LastIndex(image, "/")
+	colon := strings.LastIndex(image, ":")
+	if colon <= slash {
+		return false
+	}
+	return image[colon+1:] == "local"
+}
+
+func helperContainerLabels() map[string]string {
+	return map[string]string{LabelHelper: "true"}
 }
 
 func (c *Client) EnsureImage(ctx context.Context, image string) error {
@@ -101,13 +136,48 @@ func (c *Client) EnsureImage(ctx context.Context, image string) error {
 	if err == nil {
 		return nil
 	}
+	if IsLocalOnlyImage(image) {
+		return fmt.Errorf("%w: %s not found locally (refusing to pull :local tag)", ErrImageNotFound, image)
+	}
 	reader, err := c.cli.ImagePull(ctx, image, imagetypes.PullOptions{})
 	if err != nil {
-		return fmt.Errorf("pull image: %w", err)
+		return fmt.Errorf("%w: pull %s: %w", ErrImagePull, image, err)
 	}
 	defer reader.Close()
-	_, _ = io.Copy(io.Discard, reader)
+	if err := consumeImagePull(reader); err != nil {
+		return fmt.Errorf("%w: pull %s: %w", ErrImagePull, image, err)
+	}
+	_, _, err = c.cli.ImageInspectWithRaw(ctx, image)
+	if err != nil {
+		return fmt.Errorf("%w: %s not available after pull", ErrImageNotFound, image)
+	}
 	return nil
+}
+
+// consumeImagePull reads a Docker image-pull JSON stream and returns a pull error
+// encoded in the stream (ImagePull often returns HTTP 200 with error objects).
+func consumeImagePull(r io.Reader) error {
+	dec := json.NewDecoder(r)
+	for {
+		var msg struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err := dec.Decode(&msg); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if msg.Error != "" {
+			return errors.New(msg.Error)
+		}
+		if msg.ErrorDetail.Message != "" {
+			return errors.New(msg.ErrorDetail.Message)
+		}
+	}
 }
 
 func (c *Client) EnsureVolume(ctx context.Context, name string) error {
@@ -210,6 +280,9 @@ func (c *Client) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 		Env:    opts.Env,
 		Labels: opts.Labels,
 	}
+	if len(opts.Cmd) > 0 {
+		cfg.Cmd = append([]string{}, opts.Cmd...)
+	}
 	if opts.StopTimeout != nil {
 		cfg.StopTimeout = opts.StopTimeout
 	}
@@ -217,10 +290,16 @@ func (c *Client) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 	resp, err := c.cli.ContainerCreate(ctx, cfg, hostCfg, (*network.NetworkingConfig)(nil), nil, opts.Name)
 	if err != nil {
 		id, adoptErr := c.adoptExisting(opts, err)
-		if adoptErr == nil {
+		if errors.Is(adoptErr, errRetryCreateAfterAdopt) {
+			resp, err = c.cli.ContainerCreate(ctx, cfg, hostCfg, (*network.NetworkingConfig)(nil), nil, opts.Name)
+			if err != nil {
+				return "", err
+			}
+		} else if adoptErr == nil {
 			return id, nil
+		} else {
+			return "", err
 		}
-		return "", err
 	}
 	if err := c.startByID(ctx, resp.ID); err != nil {
 		// Context may have been canceled after create succeeded; finish start
@@ -238,6 +317,10 @@ func (c *Client) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 	c.InvalidateInspect(opts.Name)
 	return resp.ID, nil
 }
+
+// errRetryCreateAfterAdopt tells CreateAndStart to retry ContainerCreate after
+// discarding a leftover configure container that still has RUNNER_TOKEN.
+var errRetryCreateAfterAdopt = errors.New("retry create after discarding leftover token container")
 
 // adoptExisting recovers when ContainerCreate fails with a name conflict or a
 // canceled/deadline context: the daemon may already have created the container.
@@ -257,6 +340,15 @@ func (c *Client) adoptExisting(opts CreateOpts, createErr error) (string, error)
 	}
 	if !labelsMatch(info.Labels, opts.Labels) {
 		return "", createErr
+	}
+	if EnvHasKey(info.Env, "RUNNER_TOKEN") && !opts.AllowRunnerToken {
+		slog.Warn("discarding leftover configure container with RUNNER_TOKEN; retrying create",
+			"name", opts.Name, "id", info.ID)
+		if remErr := c.removeByIDDetached(info.ID); remErr != nil {
+			return "", fmt.Errorf("remove leftover configure container: %w", remErr)
+		}
+		c.InvalidateInspect(opts.Name)
+		return "", errRetryCreateAfterAdopt
 	}
 	if !info.Running {
 		if err := c.cli.ContainerStart(dctx, info.ID, container.StartOptions{}); err != nil {
@@ -439,6 +531,25 @@ func (c *Client) ListManaged(ctx context.Context) ([]ManagedContainer, error) {
 	return out, nil
 }
 
+// RemoveExitedHelpers deletes stopped alpine helper containers left behind after
+// a canceled CopyFromContainer / host-file op. Running helpers are left alone.
+func (c *Client) RemoveExitedHelpers(ctx context.Context) error {
+	args := filters.NewArgs()
+	args.Add("label", LabelHelper+"=true")
+	args.Add("status", "exited")
+	list, err := c.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, item := range list {
+		if remErr := c.removeByIDDetached(item.ID); remErr != nil && first == nil {
+			first = remErr
+		}
+	}
+	return first
+}
+
 func (c *Client) Start(ctx context.Context, name string) error {
 	err := c.cli.ContainerStart(ctx, name, container.StartOptions{})
 	c.InvalidateInspect(name)
@@ -510,8 +621,11 @@ func (c *Client) Remove(ctx context.Context, name string, removeVolume string) e
 	if err := c.RemoveContainer(ctx, name); err != nil {
 		return err
 	}
-	if removeVolume != "" {
-		_ = c.RemoveVolume(ctx, removeVolume)
+	if removeVolume == "" {
+		return nil
+	}
+	if err := c.RemoveVolume(ctx, removeVolume); err != nil && !IsNotFound(err) {
+		return err
 	}
 	return nil
 }

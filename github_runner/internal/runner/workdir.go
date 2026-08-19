@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	defaultWorkdirRoot = "/srv/gha-work"
-	runnerConfigFile   = ".runner"
+	defaultWorkdirRoot     = "/srv/gha-work"
+	runnerConfigFile       = ".runner"
+	runnerConfigBackupFile = ".runner.bak"
 )
 
 // errNoRunnerConfig means the registration volume has no .runner file yet.

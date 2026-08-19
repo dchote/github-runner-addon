@@ -13,6 +13,7 @@ type workdirHost interface {
 	ReadHostFile(ctx context.Context, hostPath string) ([]byte, error)
 	ChmodHostPath(ctx context.Context, hostPath string, mode os.FileMode) error
 	ReadVolumeFile(ctx context.Context, volumeName, relPath string) ([]byte, error)
+	WriteVolumeFile(ctx context.Context, volumeName, relPath string, data []byte) error
 	RemoveVolumeFiles(ctx context.Context, volumeName string, relPaths ...string) error
 }
 

@@ -3,11 +3,14 @@ import { api } from '@/utils/api'
 
 async function mutateRunner({ commit, dispatch }, fn, { refreshHealth = false } = {}) {
   try {
-    await fn()
+    const result = await fn()
+    commit('setError', null)
     await dispatch('fetchRunners')
     if (refreshHealth) await dispatch('fetchHealth')
+    return result
   } catch (e) {
     commit('setError', e.message || String(e))
+    await dispatch('fetchRunners').catch(() => {})
     throw e
   }
 }
@@ -70,7 +73,6 @@ export default createStore({
     async fetchRunners({ commit }, { initial = false } = {}) {
       if (initial) commit('setInitialLoading', true)
       else commit('setLoading', true)
-      commit('setError', null)
       try {
         const data = await api.get('/api/v1/runners')
         commit('setRunners', data.runners || [])
@@ -103,6 +105,12 @@ export default createStore({
     recreateRunner(ctx, { id, token } = {}) {
       const body = token ? { token } : {}
       return mutateRunner(ctx, () => api.post(`/api/v1/runners/${id}/recreate`, body), {
+        refreshHealth: true,
+      })
+    },
+    recreateMissingRunners(ctx, { token } = {}) {
+      const body = token ? { token } : {}
+      return mutateRunner(ctx, () => api.post('/api/v1/runners/recreate-missing', body), {
         refreshHealth: true,
       })
     },

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -11,6 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dchote/github-runner-addon/internal/container/docker"
+	"github.com/dchote/github-runner-addon/internal/runner"
+	"github.com/dchote/github-runner-addon/internal/store"
 	"github.com/gorilla/websocket"
 )
 
@@ -18,8 +22,17 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: checkWSOrigin,
 }
 
-// checkWSOrigin allows same-host Origin, HA ingress (X-Ingress-Path / X-Forwarded-Host),
-// and non-browser clients with no Origin.
+func forwardedHost(r *http.Request) string {
+	fwd := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if fwd == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.Split(fwd, ",")[0])
+}
+
+// checkWSOrigin allows same-host Origin, Origin matching X-Forwarded-Host (HA
+// ingress), and non-browser clients with no Origin. Ingress headers alone never
+// allow an arbitrary Origin.
 func checkWSOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -32,18 +45,7 @@ func checkWSOrigin(r *http.Request) bool {
 	if hostsEqual(u.Host, r.Host) {
 		return true
 	}
-	if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
-		// May be a comma-separated list; first hop is the client-facing host.
-		host := strings.TrimSpace(strings.Split(fwd, ",")[0])
-		if hostsEqual(u.Host, host) {
-			return true
-		}
-	}
-	// Home Assistant ingress: browser Origin is the HA UI; request Host is internal.
-	if strings.TrimSpace(r.Header.Get("X-Ingress-Path")) != "" {
-		return true
-	}
-	if strings.EqualFold(r.Header.Get("X-Hass-Source"), "core.ingress") {
+	if fwd := forwardedHost(r); fwd != "" && hostsEqual(u.Host, fwd) {
 		return true
 	}
 	return false
@@ -180,7 +182,7 @@ func (h *Handlers) WebSocket(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) streamLogsWS(ctx context.Context, conn *wsConn, runnerID, tail string) {
 	rc, err := h.Manager.Logs(ctx, runnerID, true, tail)
 	if err != nil {
-		_ = conn.writeJSON(wsServerMsg{Type: "error", Channel: "container_logs", RunnerID: runnerID, Error: err.Error()})
+		_ = conn.writeJSON(wsServerMsg{Type: "error", Channel: "container_logs", RunnerID: runnerID, Error: wsPublicError(err)})
 		return
 	}
 	defer rc.Close()
@@ -197,7 +199,7 @@ func (h *Handlers) streamLogsWS(ctx context.Context, conn *wsConn, runnerID, tai
 			Type:     "log_line",
 			Channel:  "container_logs",
 			RunnerID: runnerID,
-			Line:     scanner.Text(),
+			Line:     runner.RedactSecrets(scanner.Text()),
 		}); err != nil {
 			slog.Debug("ws write failed", "err", err)
 			return
@@ -205,5 +207,21 @@ func (h *Handlers) streamLogsWS(ctx context.Context, conn *wsConn, runnerID, tai
 	}
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		slog.Debug("ws log scan ended", "err", err, "runner_id", runnerID)
+	}
+}
+
+func wsPublicError(err error) string {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return "runner not found"
+	case errors.Is(err, runner.ErrValidation):
+		return runner.RedactSecrets(publicErr(err))
+	case docker.IsNotFound(err):
+		return "container is missing; recreate it"
+	case errors.Is(err, runner.ErrDockerUnavailable):
+		return "docker engine unavailable"
+	default:
+		slog.Error("ws logs failed", "err", err)
+		return "failed to stream logs"
 	}
 }

@@ -51,7 +51,12 @@ func TestCheckWSOrigin(t *testing.T) {
 
 	r.Header.Del("X-Forwarded-Host")
 	r.Header.Set("X-Ingress-Path", "/api/hassio_ingress/tok")
-	if !checkWSOrigin(r) {
-		t.Fatal("X-Ingress-Path should allow under HA ingress")
+	if checkWSOrigin(r) {
+		t.Fatal("X-Ingress-Path must not allow an unmatched Origin")
+	}
+
+	r.Header.Set("Origin", "http://evil.example")
+	if checkWSOrigin(r) {
+		t.Fatal("ingress header must not allow a cross-site Origin")
 	}
 }

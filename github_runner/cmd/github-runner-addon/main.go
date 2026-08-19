@@ -60,6 +60,7 @@ func main() {
 	}
 
 	mgr := runner.NewManager(st, dockerClient, gh, cfg.RunnerImage, cfg.MountDockerSock, cfg.AppVersion)
+	mgr.SetDockerFactory(docker.New)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

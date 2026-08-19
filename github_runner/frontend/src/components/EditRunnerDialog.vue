@@ -54,11 +54,25 @@
         label="Apply now (recreate container)"
         :disabled="!!submittingAction"
       />
+      <v-alert
+        v-if="apply && patConfigured"
+        class="mb-2"
+        type="info"
+        variant="tonal"
+        density="comfortable"
+      >
+        A PAT is configured — a token is minted when the volume cannot be reused. You can still
+        paste a registration token to override.
+      </v-alert>
       <v-text-field
-        v-if="apply && !patConfigured"
+        v-if="apply"
         v-model="token"
         class="mb-2"
-        label="Registration token (if volume missing or workdir reconfigure needed)"
+        :label="
+          patConfigured
+            ? 'Registration token (optional override)'
+            : 'Registration token (required if volume missing or workdir reconfigure needed)'
+        "
         type="password"
         autocomplete="off"
         :disabled="!!submittingAction"

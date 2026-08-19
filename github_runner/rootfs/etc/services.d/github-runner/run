@@ -22,6 +22,9 @@ if [[ -f "${OPTIONS_FILE}" ]]; then
   PAT="$(jq -r '.github_pat // empty' "${OPTIONS_FILE}")"
   if [[ -n "${PAT}" && "${PAT}" != "null" ]]; then
     export GITHUB_PAT="${PAT}"
+  else
+    # options.json is source of truth — do not inherit a leftover process env PAT.
+    unset GITHUB_PAT
   fi
 else
   export LOG_LEVEL="${LOG_LEVEL:-info}"

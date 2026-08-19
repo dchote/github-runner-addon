@@ -118,6 +118,14 @@ func (m *Manager) applyJobStatus(ctx context.Context, v *View, containerRef, wor
 // recreate/delete/apply cannot tear down the agent mid-build (GitHub then
 // reports "self-hosted runner lost communication").
 func (m *Manager) errIfBusy(ctx context.Context, rec store.Runner) error {
+	running, known, err := m.containerIsRunning(ctx, rec.ContainerName)
+	if err != nil {
+		return wrapInspectErr(err)
+	}
+	if known && !running {
+		// Missing/exited: leftover host status.json must not block recreate after a Docker reset.
+		return nil
+	}
 	workdir := resolveWorkdirHostPath(rec)
 	if workdir == "" {
 		return nil
@@ -125,30 +133,53 @@ func (m *Manager) errIfBusy(ctx context.Context, rec store.Runner) error {
 	m.invalidateJobStatusCache(workdir)
 	data, err := m.readJobStatusBytes(ctx, rec.ContainerName, workdir, true)
 	if err != nil {
-		// Missing/unreadable status: fail open (same as unknown in the UI).
+		if known && running {
+			return fmt.Errorf("%w: cannot verify idle; stop the runner first", ErrRunnerBusy)
+		}
+		// Tests without inspect (known=false) fall through to host status.json miss as idle.
 		return nil
 	}
 	state, job := parseJobStatusFile(data, time.Now())
-	if state != jobStateBusy {
-		return nil
+	if state == jobStateBusy {
+		detail := "a job is running"
+		if job != nil {
+			parts := make([]string, 0, 3)
+			if job.Repository != "" {
+				parts = append(parts, job.Repository)
+			}
+			if job.Workflow != "" {
+				parts = append(parts, job.Workflow)
+			}
+			if job.Job != "" {
+				parts = append(parts, job.Job)
+			}
+			if len(parts) > 0 {
+				detail = strings.Join(parts, " / ")
+			}
+		}
+		return fmt.Errorf("%w: refuse recreate/delete/apply while busy (%s); wait for the job to finish or stop the runner first", ErrRunnerBusy, detail)
 	}
-	detail := "a job is running"
-	if job != nil {
-		parts := make([]string, 0, 3)
-		if job.Repository != "" {
-			parts = append(parts, job.Repository)
-		}
-		if job.Workflow != "" {
-			parts = append(parts, job.Workflow)
-		}
-		if job.Job != "" {
-			parts = append(parts, job.Job)
-		}
-		if len(parts) > 0 {
-			detail = strings.Join(parts, " / ")
-		}
+	if known && running && state == jobStateUnknown {
+		return fmt.Errorf("%w: cannot verify idle; stop the runner first", ErrRunnerBusy)
 	}
-	return fmt.Errorf("%w: refuse recreate/delete/apply while busy (%s); wait for the job to finish or stop the runner first", ErrRunnerBusy, detail)
+	return nil
+}
+
+// containerIsRunning reports (running, known, err).
+// known is false when there is no inspect source (tests without Docker); callers then fall through to status.json.
+// Inspect errors fail closed (err != nil) so a flaky daemon cannot skip the busy gate then kill a running job.
+func (m *Manager) containerIsRunning(ctx context.Context, name string) (running bool, known bool, err error) {
+	if name == "" {
+		return false, true, nil
+	}
+	info, err := m.inspectContainer(ctx, name)
+	if err != nil {
+		if errors.Is(err, errInspectUnavailable) {
+			return false, false, nil
+		}
+		return false, false, err
+	}
+	return info.Exists && info.Running, true, nil
 }
 
 func (m *Manager) readJobStatusBytes(ctx context.Context, containerRef, workdir string, live bool) ([]byte, error) {
@@ -243,15 +274,18 @@ func isJobStatusMissing(err error) bool {
 // Seeds idle only after a successful transition from stopped → started.
 func (m *Manager) ensureHooksThenStart(ctx context.Context, rec store.Runner) error {
 	workdir := resolveWorkdirHostPath(rec)
-	if m.Docker == nil {
-		return ErrDockerUnavailable
-	}
-	info, err := m.Docker.InspectByName(ctx, rec.ContainerName)
+	info, err := m.inspectContainer(ctx, rec.ContainerName)
 	if err != nil {
-		return err
+		return wrapInspectErr(err)
 	}
 	if info.Exists && info.Running {
 		return nil
+	}
+	if !info.Exists {
+		return fmt.Errorf("%w: container is missing; recreate it", ErrValidation)
+	}
+	if m.Docker == nil {
+		return ErrDockerUnavailable
 	}
 	if err := m.ensureJobHookScripts(ctx, workdir); err != nil {
 		slog.Debug("ensure job hooks before start", "runner", rec.ID, "err", err)
@@ -268,6 +302,16 @@ func (m *Manager) ensureHooksThenStart(ctx context.Context, rec store.Runner) er
 // ensureHooksThenRestart restarts the container; seeds idle only after success.
 func (m *Manager) ensureHooksThenRestart(ctx context.Context, rec store.Runner) error {
 	workdir := resolveWorkdirHostPath(rec)
+	info, err := m.inspectContainer(ctx, rec.ContainerName)
+	if err != nil {
+		return wrapInspectErr(err)
+	}
+	if !info.Exists {
+		return fmt.Errorf("%w: container is missing; recreate it", ErrValidation)
+	}
+	if m.Docker == nil {
+		return ErrDockerUnavailable
+	}
 	if err := m.ensureJobHookScripts(ctx, workdir); err != nil {
 		slog.Debug("ensure job hooks before restart", "runner", rec.ID, "err", err)
 	}

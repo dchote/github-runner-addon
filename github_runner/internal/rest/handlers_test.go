@@ -2,9 +2,11 @@ package rest
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dchote/github-runner-addon/internal/runner"
@@ -38,6 +40,9 @@ func TestHealthHandler(t *testing.T) {
 	if env.Data["github_pat_configured"] != false {
 		t.Fatalf("pat %v", env.Data["github_pat_configured"])
 	}
+	if env.Data["status"] != "degraded" {
+		t.Fatalf("docker unavailable should be degraded, status=%v", env.Data["status"])
+	}
 }
 
 func TestCreateValidation(t *testing.T) {
@@ -50,5 +55,17 @@ func TestCreateValidation(t *testing.T) {
 	h.CreateRunner(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestWriteRunnerErrImagePull(t *testing.T) {
+	h := &Handlers{}
+	rr := httptest.NewRecorder()
+	h.writeRunnerErr(rr, fmt.Errorf("%w: pull img: connection refused", runner.ErrImagePull))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "IMAGE_PULL_ERROR") {
+		t.Fatalf("body=%s", rr.Body.String())
 	}
 }

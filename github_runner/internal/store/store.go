@@ -3,13 +3,16 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
 
 var ErrNotFound = errors.New("runner not found")
 var ErrConflict = errors.New("runner name already exists")
+var ErrSchema = errors.New("unsupported runners.json schema version")
 
 const SchemaVersion = 4
 
@@ -89,6 +92,9 @@ func (s *Store) load() (fileData, error) {
 	if data.Version == 0 {
 		data.Version = 1
 	}
+	if data.Version > SchemaVersion {
+		return data, fmt.Errorf("%w: got %d, supported %d", ErrSchema, data.Version, SchemaVersion)
+	}
 	return data, nil
 }
 
@@ -99,10 +105,29 @@ func (s *Store) save(data fileData) error {
 		return err
 	}
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	if dir, err := os.Open(filepath.Dir(s.path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
 }
 
 // Readable reports whether the store file can be loaded.

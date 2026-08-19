@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,19 @@ const (
 
 	// listEnrichConcurrency bounds parallel enrich workers during List.
 	listEnrichConcurrency = 8
+
+	// configureNoopCmd is the Docker CMD override for the configure phase.
+	// myoung34's entrypoint runs config.sh then execs CMD; `true` exits without
+	// starting the listener (DEBUG_ONLY skips config.sh when .runner is missing).
+	configureNoopCmd = "true"
+
+	// detachedLifecycleTimeout bounds Stop/Delete/Restart Docker work so ingress
+	// cancel cannot abort mid-remove (stop grace 120s plus round-trips).
+	detachedLifecycleTimeout = 3 * time.Minute
+
+	// maxCPULimit / maxMemoryLimitMB reject unbounded resource claims.
+	maxCPULimit      = 256.0
+	maxMemoryLimitMB = 1024 * 1024 // 1 TiB in MiB
 )
 
 func lifecycleContext() (context.Context, context.CancelFunc) {
@@ -56,7 +70,7 @@ var managedEnvKeys = map[string]struct{}{
 	"ACTIONS_RUNNER_HOOK_JOB_COMPLETED":   {},
 }
 
-// configureSuccessMarkers indicate myoung34 config.sh finished (DEBUG_ONLY path).
+// configureSuccessMarkers indicate myoung34 config.sh finished.
 // Prefer confirming .runner on the volume; these are secondary log signals.
 var configureSuccessMarkers = []string{
 	"Settings Saved",
@@ -98,6 +112,9 @@ type Manager struct {
 	orphansMu     sync.RWMutex
 	orphans       []OrphanView
 
+	dockerMu      sync.Mutex
+	dockerFactory func() (*docker.Client, error)
+
 	// workdirHost overrides Docker for EnsureHostDir / volume file ops (tests).
 	workdirHost workdirHost
 
@@ -115,7 +132,21 @@ type Manager struct {
 
 	// verifyTimeout bounds post-start workFolder checks (0 = 45s). Tests may shorten it.
 	verifyTimeout time.Duration
+
+	// inspectFn / createAndStartFn / readContainerFileFn are test seams (nil → Docker client).
+	inspectFn           func(ctx context.Context, name string) (docker.InspectInfo, error)
+	createAndStartFn    func(ctx context.Context, opts docker.CreateOpts) (string, error)
+	readContainerFileFn func(ctx context.Context, name, path string) ([]byte, error)
+
+	// listenTimeout bounds waitForListening (0 = 90s). Tests may shorten it.
+	listenTimeout time.Duration
 }
+
+// errInspectUnavailable is returned when neither Docker nor inspectFn can inspect.
+var errInspectUnavailable = errors.New("docker inspect unavailable")
+
+// errContainerReadUnavailable is returned when neither Docker nor readContainerFileFn can copy files.
+var errContainerReadUnavailable = errors.New("container file read unavailable")
 
 // lockRunner returns an unlock func; callers must defer unlock().
 // Prefer lockRunnerOpt(..., true) for create:<name> and Delete so idle keys are pruned.
@@ -168,6 +199,56 @@ func NewManager(st *store.Store, d *docker.Client, gh *github.Client, image stri
 	}
 }
 
+// SetDockerFactory allows reconnecting when the engine was unavailable at boot.
+func (m *Manager) SetDockerFactory(fn func() (*docker.Client, error)) {
+	m.dockerFactory = fn
+}
+
+// EnsureDocker connects via dockerFactory when the client is currently nil.
+func (m *Manager) EnsureDocker() error {
+	return m.ensureDocker()
+}
+
+func (m *Manager) ensureDocker() error {
+	if m == nil {
+		return ErrDockerUnavailable
+	}
+	m.dockerMu.Lock()
+	defer m.dockerMu.Unlock()
+	if m.Docker != nil {
+		return nil
+	}
+	if m.dockerFactory == nil {
+		return ErrDockerUnavailable
+	}
+	c, err := m.dockerFactory()
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrDockerUnavailable, err)
+	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := c.Ping(pingCtx); err != nil {
+		_ = c.Close()
+		return fmt.Errorf("%w: %w", ErrDockerUnavailable, err)
+	}
+	m.Docker = c
+	slog.Info("docker client connected")
+	return nil
+}
+
+func (m *Manager) requireDocker() error {
+	if m.Docker != nil {
+		return nil
+	}
+	if err := m.ensureDocker(); err != nil {
+		return err
+	}
+	if m.Docker == nil {
+		return ErrDockerUnavailable
+	}
+	return nil
+}
+
 type CreateRequest struct {
 	Name            string             `json:"name"`
 	URL             string             `json:"url"`
@@ -202,6 +283,21 @@ type RecreateRequest struct {
 	Token string `json:"token"`
 }
 
+type RecreateMissingRequest struct {
+	Token string `json:"token"`
+}
+
+type RecreateMissingFailure struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
+type RecreateMissingResult struct {
+	Recreated []string                 `json:"recreated"`
+	Failed    []RecreateMissingFailure `json:"failed"`
+}
+
 type View struct {
 	store.Runner
 	Status           string      `json:"status"`
@@ -221,8 +317,9 @@ func (m *Manager) PATConfigured() bool {
 }
 
 type enrichOpts struct {
-	// workdirDiag bypasses the in-memory cache and reads .runner from the data volume.
-	// List uses cache-only; Get/verify request a fresh read.
+	// workdirDiag requests a fresh .runner read. List uses cache-only.
+	// Get live-reads via CopyFromContainer only while the container is running
+	// (missing/exited stay cache-only — no alpine volume helpers).
 	workdirDiag bool
 	// jobStatusLive allows CopyFromContainer + host helper reads for status.json.
 	// List keeps this false (cache + CopyFromContainer only) to avoid alpine helper storms.
@@ -230,12 +327,13 @@ type enrichOpts struct {
 }
 
 func (m *Manager) enrich(ctx context.Context, r store.Runner, opts enrichOpts) View {
-	return m.enrichWithManaged(ctx, r, nil, opts)
+	return m.enrichWithManaged(ctx, r, nil, false, opts)
 }
 
-// enrichWithManaged builds a View. When mc is non-nil (from a batched ListManaged),
-// InspectByName is skipped — important for scalable concurrent List.
-func (m *Manager) enrichWithManaged(ctx context.Context, r store.Runner, mc *docker.ManagedContainer, opts enrichOpts) View {
+// enrichWithManaged builds a View.
+// When fromManagedList is true, mc is the batched ListManaged hit (or nil if absent) —
+// InspectByName is skipped so a Docker-reset fleet does not N-inspect missing names.
+func (m *Manager) enrichWithManaged(ctx context.Context, r store.Runner, mc *docker.ManagedContainer, fromManagedList bool, opts enrichOpts) View {
 	// Coerce bind cache onto the View copy so API clients see same-path target
 	// without requiring a store rewrite on every List.
 	if r.Cache != nil && r.Cache.Enabled {
@@ -250,32 +348,14 @@ func (m *Manager) enrichWithManaged(ctx context.Context, r store.Runner, mc *doc
 	if warns := cacheSiblingWarnings(r.Cache); len(warns) > 0 {
 		v.Warnings = append(v.Warnings, warns...)
 	}
-	if r.VolumeName != "" {
-		m.applyWorkdirDiagnostics(ctx, &v, r.VolumeName, opts.workdirDiag)
-	}
-	if m.Docker == nil {
+	info, ok := m.resolveInspect(ctx, r, mc, fromManagedList)
+	if !ok {
+		m.applyWorkdirDiagnostics(ctx, &v, false)
 		return v
 	}
-	var info docker.InspectInfo
-	if mc != nil {
-		info = docker.InspectInfo{
-			Name:    r.ContainerName,
-			Exists:  true,
-			ID:      mc.ID,
-			Status:  mc.Status,
-			Running: mc.Running,
-		}
-	} else {
-		var err error
-		info, err = m.Docker.InspectByName(ctx, r.ContainerName)
-		if err != nil {
-			if !docker.IsContextError(err) {
-				slog.Warn("docker inspect failed", "container", r.ContainerName, "err", err)
-			}
-			return v
-		}
-	}
 	v.Status, v.Running = normalizeStatus(info)
+	// Live .runner reads use CopyFromContainer — only while the container is running.
+	m.applyWorkdirDiagnostics(ctx, &v, opts.workdirDiag && v.Running)
 	if v.Running {
 		ref := info.ID
 		if ref == "" {
@@ -286,9 +366,45 @@ func (m *Manager) enrichWithManaged(ctx context.Context, r store.Runner, mc *doc
 	return v
 }
 
-func (m *Manager) applyWorkdirDiagnostics(ctx context.Context, v *View, volumeName string, live bool) {
+func (m *Manager) resolveInspect(ctx context.Context, r store.Runner, mc *docker.ManagedContainer, fromManagedList bool) (docker.InspectInfo, bool) {
+	if mc != nil {
+		return docker.InspectInfo{
+			Name:    r.ContainerName,
+			Exists:  true,
+			ID:      mc.ID,
+			Status:  mc.Status,
+			Running: mc.Running,
+		}, true
+	}
+	if fromManagedList {
+		return docker.InspectInfo{Name: r.ContainerName, Exists: false}, true
+	}
+	info, err := m.inspectContainer(ctx, r.ContainerName)
+	if err != nil {
+		if !errors.Is(err, errInspectUnavailable) && !docker.IsContextError(err) {
+			slog.Warn("docker inspect failed", "container", r.ContainerName, "err", err)
+		}
+		return docker.InspectInfo{}, false
+	}
+	return info, true
+}
+
+func (m *Manager) inspectContainer(ctx context.Context, name string) (docker.InspectInfo, error) {
+	if m.inspectFn != nil {
+		return m.inspectFn(ctx, name)
+	}
+	if m.Docker == nil {
+		return docker.InspectInfo{Name: name}, errInspectUnavailable
+	}
+	return m.Docker.InspectByName(ctx, name)
+}
+
+func (m *Manager) applyWorkdirDiagnostics(ctx context.Context, v *View, live bool) {
+	if v.VolumeName == "" {
+		return
+	}
 	if live {
-		wf, err := m.readAgentWorkFolder(ctx, volumeName, true)
+		wf, err := m.readAgentWorkFolderPreferContainer(ctx, v.Runner, true)
 		if err != nil {
 			if errors.Is(err, errNoRunnerConfig) {
 				return
@@ -297,7 +413,7 @@ func (m *Manager) applyWorkdirDiagnostics(ctx context.Context, v *View, volumeNa
 				return
 			}
 			v.WorkdirError = err.Error()
-			slog.Warn("read .runner workFolder failed", "volume", volumeName, "err", err)
+			slog.Warn("read .runner workFolder failed", "volume", v.VolumeName, "err", err)
 			return
 		}
 		if wf != "" {
@@ -308,7 +424,7 @@ func (m *Manager) applyWorkdirDiagnostics(ctx context.Context, v *View, volumeNa
 	}
 	// List path: never spawn helper containers — use cache populated by Get/verify.
 	m.agentWFMu.RLock()
-	c, hit := m.agentWF[volumeName]
+	c, hit := m.agentWF[v.VolumeName]
 	m.agentWFMu.RUnlock()
 	if !hit || c.missing || c.folder == "" {
 		return
@@ -420,8 +536,10 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 	}
 
 	managedByName := map[string]docker.ManagedContainer{}
+	fromManagedList := false
 	if m.Docker != nil {
 		if managed, err := m.Docker.ListManaged(ctx); err == nil {
+			fromManagedList = true
 			for _, c := range managed {
 				if c.Name != "" {
 					managedByName[c.Name] = c
@@ -446,7 +564,7 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 				cp := c
 				mc = &cp
 			}
-			out[i] = m.enrichWithManaged(gctx, r, mc, enrichOpts{workdirDiag: false, jobStatusLive: false})
+			out[i] = m.enrichWithManaged(gctx, r, mc, fromManagedList, enrichOpts{workdirDiag: false, jobStatusLive: false})
 			return nil
 		})
 	}
@@ -558,11 +676,8 @@ func (m *Manager) resolveRegistrationToken(ctx context.Context, projectURL, toke
 }
 
 func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
-	if m.Docker == nil {
-		return View{}, ErrDockerUnavailable
-	}
-	if !m.createLimiter.Allow() {
-		return View{}, fmt.Errorf("%w: too many create/recreate requests", ErrRateLimited)
+	if err := m.requireDocker(); err != nil {
+		return View{}, err
 	}
 
 	name := strings.TrimSpace(req.Name)
@@ -570,36 +685,46 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 	if name == "" || rawURL == "" {
 		return View{}, fmt.Errorf("%w: name and url are required", ErrValidation)
 	}
-	norm := docker.NormalizeName(name)
-	containerName := "gha-runner-" + norm
-	// Serialize same-name creates; forget key after so the map does not grow forever.
-	unlockName := m.lockRunnerOpt("create:"+containerName, true)
-	defer unlockName()
-
-	info, err := m.parseProject(rawURL)
-	if err != nil {
-		return View{}, err
-	}
-	token, err := m.resolveRegistrationToken(ctx, info.HTMLURL, req.Token)
-	if err != nil {
-		return View{}, err
-	}
-	labels := normalizeLabels(req.Labels)
 	if err := validateExtraEnv(req.ExtraEnv); err != nil {
+		return View{}, err
+	}
+	if err := validateResourceLimits(req.CPULimit, req.MemoryLimitMB); err != nil {
+		return View{}, err
+	}
+	if err := validateNetworkMode(req.NetworkMode); err != nil {
 		return View{}, err
 	}
 	cache := normalizeCache(req.Cache)
 	if err := validateCache(cache); err != nil {
 		return View{}, err
 	}
-	for _, w := range cacheSiblingWarnings(cache) {
-		slog.Warn("cache config advisory", "runner", name, "warning", w)
+	info, err := m.parseProject(rawURL)
+	if err != nil {
+		return View{}, err
 	}
+
+	norm := docker.NormalizeName(name)
+	containerName := "gha-runner-" + norm
+	// Serialize same-name creates; forget key after so the map does not grow forever.
+	unlockName := m.lockRunnerOpt("create:"+containerName, true)
+	defer unlockName()
+
+	existing, err := m.Store.List()
+	if err != nil {
+		return View{}, err
+	}
+	for _, e := range existing {
+		if e.Name == name || e.ContainerName == containerName {
+			return View{}, store.ErrConflict
+		}
+	}
+
+	token, err := m.resolveRegistrationToken(ctx, info.HTMLURL, req.Token)
+	if err != nil {
+		return View{}, err
+	}
+
 	id := uuid.NewString()
-	// Hold the runner id lock for the rest of create so Delete/Start/Stop/Recreate
-	// cannot interleave after Store.Add while startContainer is still running.
-	unlockID := m.lockRunner(id)
-	defer unlockID()
 	volumeName := containerName + "-data"
 	image := strings.TrimSpace(req.Image)
 	if image == "" {
@@ -608,14 +733,13 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 	if image == "" {
 		image = DefaultRunnerImage
 	}
-
 	now := time.Now().UTC()
 	rec := store.Runner{
 		ID:              id,
 		Name:            name,
 		URL:             info.HTMLURL,
 		Scope:           info.Scope,
-		Labels:          labels,
+		Labels:          normalizeLabels(req.Labels),
 		ContainerName:   containerName,
 		VolumeName:      volumeName,
 		Image:           image,
@@ -632,6 +756,18 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 	if err := validateWorkdirHostPath(resolveWorkdirHostPath(rec)); err != nil {
 		return View{}, err
 	}
+	for _, w := range cacheSiblingWarnings(cache) {
+		slog.Warn("cache config advisory", "runner", name, "warning", w)
+	}
+
+	if !m.createLimiter.Allow() {
+		return View{}, fmt.Errorf("%w: too many create/recreate requests", ErrRateLimited)
+	}
+
+	// Hold the runner id lock for the rest of create so Delete/Start/Stop/Recreate
+	// cannot interleave after Store.Add while startContainer is still running.
+	unlockID := m.lockRunner(id)
+	defer unlockID()
 	if err := m.Store.Add(rec); err != nil {
 		return View{}, err
 	}
@@ -646,35 +782,60 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 }
 
 // rollbackFailedCreate cleans up after a failed create. Uses a detached Docker
-// context so request cancel/timeout cannot leave an orphaned container. If the
-// container is already present with our managed labels, keep the store row for
-// operator recovery but still return createErr (fail closed — never soft-success).
+// context so request cancel/timeout cannot leave an orphaned container.
+// If GitHub may already have the runner (.runner on the volume or a managed
+// container exists), keep the store row and volume. Never soft-success.
 func (m *Manager) rollbackFailedCreate(rec store.Runner, createErr error) (View, error) {
 	dctx, cancel := docker.DetachedTimeout(detachedOpTimeout)
 	defer cancel()
 
-	info, inspErr := m.Docker.InspectByName(dctx, rec.ContainerName)
-	if inspErr == nil && info.Exists && info.Labels[docker.LabelID] == rec.ID {
-		if !info.Running {
-			if startErr := m.Docker.Start(dctx, rec.ContainerName); startErr != nil {
-				slog.Warn("create rollback: container exists but start failed",
-					"runner", rec.ID, "container", rec.ContainerName, "err", startErr)
-			} else {
-				info.Running = true
-				info.Status = "running"
-			}
-		}
-		slog.Warn("create failed after managed container existed; keeping runner for recovery",
-			"runner", rec.ID, "container", rec.ContainerName, "status", info.Status, "err", createErr)
+	info, inspErr := m.inspectContainer(dctx, rec.ContainerName)
+	if inspErr != nil && !errors.Is(inspErr, errInspectUnavailable) {
+		slog.Warn("create rollback: inspect failed; keeping store row",
+			"runner", rec.ID, "container", rec.ContainerName, "err", inspErr)
 		return View{}, createErr
 	}
 
-	if remErr := m.Docker.Remove(dctx, rec.ContainerName, rec.VolumeName); remErr != nil {
-		slog.Error("create rollback: remove failed; leaving store row for operator cleanup",
-			"runner", rec.ID, "container", rec.ContainerName, "err", remErr)
-		return View{}, fmt.Errorf("%w (cleanup failed: %v)", createErr, remErr)
+	managed := inspErr == nil && info.Exists && info.Labels[docker.LabelID] == rec.ID
+	hasRunner := false
+	if rec.VolumeName != "" {
+		if wf, err := m.readAgentWorkFolder(dctx, rec.VolumeName, true); err == nil && strings.TrimSpace(wf) != "" {
+			hasRunner = true
+		}
 	}
-	m.removeOwnedPersistenceVolumes(dctx, rec)
+
+	if managed || hasRunner {
+		if m.Docker != nil && info.Exists {
+			if docker.EnvHasKey(info.Env, "RUNNER_TOKEN") {
+				if remErr := m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, 10); remErr != nil && !docker.IsNotFound(remErr) {
+					slog.Warn("create rollback: remove leftover configure container",
+						"runner", rec.ID, "err", remErr)
+				}
+			} else if managed && !info.Running {
+				if startErr := m.Docker.Start(dctx, rec.ContainerName); startErr != nil {
+					slog.Warn("create rollback: container exists but start failed",
+						"runner", rec.ID, "container", rec.ContainerName, "err", startErr)
+				}
+			}
+		}
+		slog.Warn("create failed after registration artifact existed; keeping runner for recovery",
+			"runner", rec.ID, "container", rec.ContainerName, "has_runner", hasRunner, "managed", managed, "err", createErr)
+		return View{}, createErr
+	}
+
+	if m.PATConfigured() {
+		if derErr := m.GitHub.DeregisterRunner(dctx, rec.URL, rec.Name); derErr != nil {
+			slog.Warn("create rollback: github deregister failed", "runner", rec.Name, "err", derErr)
+		}
+	}
+	if m.Docker != nil {
+		if remErr := m.Docker.Remove(dctx, rec.ContainerName, rec.VolumeName); remErr != nil && !docker.IsNotFound(remErr) {
+			slog.Error("create rollback: remove failed; leaving store row for operator cleanup",
+				"runner", rec.ID, "container", rec.ContainerName, "err", remErr)
+			return View{}, fmt.Errorf("%w (cleanup failed: %v)", createErr, remErr)
+		}
+		m.removeOwnedPersistenceVolumes(dctx, rec)
+	}
 	_ = m.Store.Delete(rec.ID)
 	return View{}, createErr
 }
@@ -700,9 +861,10 @@ func (m *Manager) removeLegacyWorkVolume(ctx context.Context, rec store.Runner) 
 }
 
 // startContainer starts the runner container. When token is non-empty it runs a
-// configure-only phase (DEBUG_ONLY) then a tokenless long-running container so
-// docker inspect never retains RUNNER_TOKEN and we never kill a live GitHub session
-// to scrub it. When token is empty, registration files on the volume are reused.
+// configure-only phase (token + no-op CMD, no DEBUG_ONLY) then a tokenless
+// long-running container so docker inspect never retains RUNNER_TOKEN and we
+// never kill a live GitHub session to scrub it. When token is empty, registration
+// files on the volume are reused.
 func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, orgName string) error {
 	if token != "" {
 		if err := m.configureThenRun(ctx, rec, token, orgName); err != nil {
@@ -716,14 +878,16 @@ func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, o
 	return m.verifyAgentWorkdir(ctx, rec)
 }
 
-// configureThenRun registers via a one-shot DEBUG_ONLY container, then starts the
-// listener without RUNNER_TOKEN. Avoids the old scrubToken stop/start race that
-// produced "A session for this runner already exists".
+// configureThenRun registers via a one-shot container (token, CMD true, no listener),
+// then starts the listener without RUNNER_TOKEN. Avoids the old scrubToken stop/start
+// race that produced "A session for this runner already exists". DEBUG_ONLY is not
+// used: upstream skips config.sh when that flag is set and .runner is missing.
 func (m *Manager) configureThenRun(ctx context.Context, rec store.Runner, token, orgName string) error {
 	if err := m.startContainerWithoutVerify(ctx, rec, token, orgName, true); err != nil {
 		return fmt.Errorf("configure runner: %w", err)
 	}
 	if err := m.waitForConfigure(ctx, rec); err != nil {
+		slog.Warn("configure failed", "runner", rec.Name, "id", rec.ID, "err", err)
 		dctx, cancel := docker.DetachedTimeout(detachedOpTimeout)
 		_ = m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, 10)
 		cancel()
@@ -738,9 +902,10 @@ func (m *Manager) configureThenRun(ctx context.Context, rec store.Runner, token,
 		return fmt.Errorf("start runner: %w", err)
 	}
 	if confirmed, err := m.waitForListening(ctx, rec.ContainerName); err != nil {
+		slog.Warn("listen wait failed", "runner", rec.Name, "id", rec.ID, "err", err)
 		return err
 	} else if !confirmed {
-		slog.Warn("listen wait timed out without success markers; container still running", "runner", rec.ID)
+		return fmt.Errorf("%w: timed out waiting for runner to listen", ErrValidation)
 	}
 	return nil
 }
@@ -774,7 +939,7 @@ func (m *Manager) startContainerWithoutVerify(ctx context.Context, rec store.Run
 	if err := m.ensurePersistenceHostDirs(ctx, rec, workdirBind); err != nil {
 		return err
 	}
-	env := m.buildEnv(rec, token, orgName, workdirBind, configureOnly)
+	env := m.buildEnv(rec, token, orgName, workdirBind)
 	mountSock := m.MountDockerSock
 	if rec.MountDockerSock != nil {
 		mountSock = *rec.MountDockerSock
@@ -782,14 +947,16 @@ func (m *Manager) startContainerWithoutVerify(ctx context.Context, rec store.Run
 	extra := buildExtraMounts(rec, workdirBind)
 	restart := "unless-stopped"
 	var stopSecs *int
+	var cmd []string
 	if configureOnly {
 		// One-shot configure: must not restart-loop after entrypoint exits.
 		restart = "no"
+		cmd = []string{configureNoopCmd}
 	} else {
 		s := StopTimeoutSecs
 		stopSecs = &s
 	}
-	_, err := m.Docker.CreateAndStart(ctx, docker.CreateOpts{
+	_, err := m.createAndStart(ctx, docker.CreateOpts{
 		Name:  rec.ContainerName,
 		Image: rec.Image,
 		Env:   env,
@@ -797,23 +964,41 @@ func (m *Manager) startContainerWithoutVerify(ctx context.Context, rec store.Run
 			docker.LabelManaged: "true",
 			docker.LabelID:      rec.ID,
 		},
-		VolumeName:      rec.VolumeName,
-		VolumeTarget:    configFilesDir,
-		ExtraMounts:     extra,
-		MountDockerSock: mountSock,
-		RestartPolicy:   restart,
-		StopTimeout:     stopSecs,
-		CPULimit:        rec.CPULimit,
-		MemoryLimitMB:   rec.MemoryLimitMB,
-		NetworkMode:     rec.NetworkMode,
+		VolumeName:       rec.VolumeName,
+		VolumeTarget:     configFilesDir,
+		ExtraMounts:      extra,
+		MountDockerSock:  mountSock,
+		RestartPolicy:    restart,
+		Cmd:              cmd,
+		StopTimeout:      stopSecs,
+		CPULimit:         rec.CPULimit,
+		MemoryLimitMB:    rec.MemoryLimitMB,
+		NetworkMode:      rec.NetworkMode,
+		AllowRunnerToken: configureOnly,
 	})
 	if err != nil {
 		if docker.IsConflict(err) {
 			return fmt.Errorf("%w: container or volume name already exists", store.ErrConflict)
 		}
+		if errors.Is(err, docker.ErrImageNotFound) {
+			return fmt.Errorf("%w: %w", ErrValidation, err)
+		}
+		if errors.Is(err, docker.ErrImagePull) {
+			return fmt.Errorf("%w: %w", ErrImagePull, err)
+		}
 		return fmt.Errorf("create container: %w", err)
 	}
 	return nil
+}
+
+func (m *Manager) createAndStart(ctx context.Context, opts docker.CreateOpts) (string, error) {
+	if m.createAndStartFn != nil {
+		return m.createAndStartFn(ctx, opts)
+	}
+	if m.Docker == nil {
+		return "", ErrDockerUnavailable
+	}
+	return m.Docker.CreateAndStart(ctx, opts)
 }
 
 // verifyAgentWorkdir retries reading .runner until workFolder matches the desired host bind.
@@ -838,7 +1023,7 @@ func (m *Manager) verifyAgentWorkdir(_ context.Context, rec store.Runner) error 
 			return fmt.Errorf("%w: agent workFolder not set to %s after start: %v", ErrValidation, desired, dctx.Err())
 		default:
 		}
-		wf, err := m.readAgentWorkFolder(dctx, rec.VolumeName, true)
+		wf, err := m.readAgentWorkFolderPreferContainer(dctx, rec, true)
 		if err == nil && workdirPathsMatch(wf, desired) {
 			return nil
 		}
@@ -854,7 +1039,7 @@ func (m *Manager) verifyAgentWorkdir(_ context.Context, rec store.Runner) error 
 	}
 }
 
-func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string, configureOnly bool) []string {
+func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string) []string {
 	env := []string{
 		"RUNNER_NAME=" + rec.Name,
 		"LABELS=" + strings.Join(rec.Labels, ","),
@@ -868,9 +1053,6 @@ func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string, con
 	}
 	if cachePath := resolveCacheEffective(rec.Cache); cachePath != "" && cachePath != "." {
 		env = append(env, "RUNNER_CACHE="+cachePath)
-	}
-	if configureOnly {
-		env = append(env, "DEBUG_ONLY=true")
 	}
 	if token != "" {
 		env = append(env, "RUNNER_TOKEN="+token)
@@ -901,7 +1083,7 @@ func (m *Manager) waitForConfigure(ctx context.Context, rec store.Runner) error 
 		select {
 		case <-ctx.Done():
 			dctx, cancel := docker.DetachedContext()
-			ok := m.agentConfigured(dctx, rec.VolumeName)
+			ok := m.agentConfigured(dctx, rec)
 			cancel()
 			if ok {
 				return nil
@@ -909,27 +1091,27 @@ func (m *Manager) waitForConfigure(ctx context.Context, rec store.Runner) error 
 			return fmt.Errorf("%w: configure interrupted before .runner was written: %v", ErrValidation, ctx.Err())
 		default:
 		}
-		if m.agentConfigured(ctx, rec.VolumeName) {
+		if m.agentConfigured(ctx, rec) {
 			return nil
 		}
-		logs, err := m.Docker.TailLogs(ctx, rec.ContainerName, "80")
+		logs, err := m.dockerTailLogs(ctx, rec.ContainerName, "80")
 		if err == nil {
 			last = logs
 			if err := registrationLogFailure(logs); err != nil {
 				return err
 			}
 			for _, marker := range configureSuccessMarkers {
-				if strings.Contains(logs, marker) && m.agentConfigured(ctx, rec.VolumeName) {
+				if strings.Contains(logs, marker) && m.agentConfigured(ctx, rec) {
 					return nil
 				}
 			}
 		}
-		info, err := m.Docker.InspectByName(ctx, rec.ContainerName)
+		info, err := m.inspectContainer(ctx, rec.ContainerName)
 		if err == nil && info.Exists && !info.Running && info.Status == "exited" {
-			if m.agentConfigured(ctx, rec.VolumeName) {
+			if m.agentConfigured(ctx, rec) {
 				return nil
 			}
-			logs, _ := m.Docker.TailLogs(ctx, rec.ContainerName, "80")
+			logs, _ := m.dockerTailLogs(ctx, rec.ContainerName, "80")
 			if err := registrationLogFailure(logs); err != nil {
 				return err
 			}
@@ -937,7 +1119,7 @@ func (m *Manager) waitForConfigure(ctx context.Context, rec store.Runner) error 
 		}
 		time.Sleep(2 * time.Second)
 	}
-	if m.agentConfigured(ctx, rec.VolumeName) {
+	if m.agentConfigured(ctx, rec) {
 		return nil
 	}
 	if last != "" {
@@ -946,39 +1128,92 @@ func (m *Manager) waitForConfigure(ctx context.Context, rec store.Runner) error 
 	return fmt.Errorf("%w: timed out waiting for runner configure", ErrValidation)
 }
 
-func (m *Manager) agentConfigured(ctx context.Context, volumeName string) bool {
-	wf, err := m.readAgentWorkFolder(ctx, volumeName, true)
+func runnerConfigContainerPath() string {
+	return configFilesDir + "/" + runnerConfigFile
+}
+
+// agentConfigured reports whether .runner exists with a workFolder. Prefers
+// CopyFromContainer on the configure/run container to avoid alpine volume helpers.
+func (m *Manager) agentConfigured(ctx context.Context, rec store.Runner) bool {
+	wf, err := m.readAgentWorkFolderPreferContainer(ctx, rec, true)
 	return err == nil && strings.TrimSpace(wf) != ""
 }
 
-// waitForListening returns (confirmed, err). confirmed means listen success markers
-// were seen. Soft timeout while still running returns (false, nil).
+func (m *Manager) readAgentWorkFolderPreferContainer(ctx context.Context, rec store.Runner, bypassCache bool) (string, error) {
+	if rec.ContainerName != "" && m.hasContainerFileReader() {
+		data, err := m.readContainerFile(ctx, rec.ContainerName, runnerConfigContainerPath())
+		if err == nil {
+			wf, perr := parseRunnerWorkFolder(data)
+			if perr != nil {
+				return "", perr
+			}
+			if rec.VolumeName != "" {
+				m.cacheAgentWorkFolder(rec.VolumeName, wf)
+			}
+			return wf, nil
+		}
+		// File/container not found: do not alpine-read the volume (wait/Get storms).
+		if isContainerConfigMissing(err) {
+			return "", errNoRunnerConfig
+		}
+		if !errors.Is(err, errContainerReadUnavailable) {
+			return "", err
+		}
+	}
+	if rec.VolumeName == "" {
+		return "", errNoRunnerConfig
+	}
+	return m.readAgentWorkFolder(ctx, rec.VolumeName, bypassCache)
+}
+
+func (m *Manager) hasContainerFileReader() bool {
+	return m.readContainerFileFn != nil || m.Docker != nil
+}
+
+func (m *Manager) readContainerFile(ctx context.Context, name, path string) ([]byte, error) {
+	if m.readContainerFileFn != nil {
+		return m.readContainerFileFn(ctx, name, path)
+	}
+	if m.Docker == nil {
+		return nil, errContainerReadUnavailable
+	}
+	return m.Docker.ReadContainerFile(ctx, name, path)
+}
+
+func isContainerConfigMissing(err error) bool {
+	return errors.Is(err, docker.ErrContainerFileNotFound) || docker.IsNotFound(err)
+}
+
+// waitForListening returns (confirmed, err). Timeout or cancel while the
+// container is still running fails closed (never 201/success).
 func (m *Manager) waitForListening(ctx context.Context, containerName string) (bool, error) {
-	deadline := time.Now().Add(90 * time.Second)
+	timeout := m.listenTimeout
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
 	var last string
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			dctx, cancel := docker.DetachedContext()
-			info, err := m.Docker.InspectByName(dctx, containerName)
+			info, err := m.inspectContainer(dctx, containerName)
 			cancel()
 			if err == nil && info.Exists && info.Running {
-				slog.Warn("listen wait interrupted; container still running",
-					"container", containerName, "err", ctx.Err())
-				return false, nil
+				return false, fmt.Errorf("%w: listen wait interrupted while container still running: %v", ErrValidation, ctx.Err())
 			}
 			return false, ctx.Err()
 		default:
 		}
-		info, err := m.Docker.InspectByName(ctx, containerName)
+		info, err := m.inspectContainer(ctx, containerName)
 		if err == nil && info.Exists && !info.Running && info.Status == "exited" {
-			logs, _ := m.Docker.TailLogs(ctx, containerName, "80")
+			logs, _ := m.dockerTailLogs(ctx, containerName, "80")
 			if failErr := registrationLogFailure(logs); failErr != nil {
 				return false, failErr
 			}
 			return false, fmt.Errorf("%w: runner container exited during startup: %s", ErrValidation, summarizeLogs(logs))
 		}
-		logs, err := m.Docker.TailLogs(ctx, containerName, "80")
+		logs, err := m.dockerTailLogs(ctx, containerName, "80")
 		if err == nil {
 			last = logs
 			if failErr := registrationLogFailure(logs); failErr != nil {
@@ -990,17 +1225,31 @@ func (m *Manager) waitForListening(ctx context.Context, containerName string) (b
 				}
 			}
 		}
-		time.Sleep(2 * time.Second)
+		wait := 2 * time.Second
+		if remaining := time.Until(deadline); remaining < wait {
+			if remaining <= 0 {
+				break
+			}
+			wait = remaining
+		}
+		time.Sleep(wait)
 	}
-	info, err := m.Docker.InspectByName(ctx, containerName)
+	info, err := m.inspectContainer(ctx, containerName)
 	if err == nil && info.Exists && info.Running {
 		slog.Warn("listen wait timed out without success markers; container still running", "container", containerName, "tail", summarizeLogs(last))
-		return false, nil
+		return false, fmt.Errorf("%w: timed out waiting for runner to listen", ErrValidation)
 	}
 	if last != "" {
 		return false, fmt.Errorf("%w: timed out waiting for runner to listen: %s", ErrValidation, summarizeLogs(last))
 	}
 	return false, fmt.Errorf("%w: timed out waiting for runner to listen", ErrValidation)
+}
+
+func (m *Manager) dockerTailLogs(ctx context.Context, name, tail string) (string, error) {
+	if m.Docker == nil {
+		return "", ErrDockerUnavailable
+	}
+	return m.Docker.TailLogs(ctx, name, tail)
 }
 
 func registrationLogFailure(logs string) error {
@@ -1014,7 +1263,7 @@ func registrationLogFailure(logs string) error {
 }
 
 func summarizeLogs(logs string) string {
-	logs = strings.TrimSpace(logs)
+	logs = RedactSecrets(strings.TrimSpace(logs))
 	if logs == "" {
 		return "(no logs)"
 	}
@@ -1054,6 +1303,9 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 		rec.ExtraEnv = req.ExtraEnv
 	}
 	if req.NetworkMode != nil {
+		if err := validateNetworkMode(*req.NetworkMode); err != nil {
+			return View{}, err
+		}
 		rec.NetworkMode = strings.TrimSpace(*req.NetworkMode)
 	}
 	if req.ResetMountDockerSock {
@@ -1081,23 +1333,29 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 	if err := validateCache(rec.Cache); err != nil {
 		return View{}, err
 	}
+	if err := validateResourceLimits(rec.CPULimit, rec.MemoryLimitMB); err != nil {
+		return View{}, err
+	}
 	for _, w := range cacheSiblingWarnings(rec.Cache) {
 		slog.Warn("cache config advisory", "runner", rec.Name, "id", id, "warning", w)
 	}
 	if err := validateWorkdirHostPath(resolveWorkdirHostPath(rec)); err != nil {
 		return View{}, err
 	}
+	if req.Apply {
+		view, recErr := m.recreateRec(ctx, rec, RecreateRequest{Token: req.Token}, true)
+		if recErr != nil {
+			return View{}, recErr
+		}
+		if err := m.Store.Update(rec); err != nil {
+			slog.Error("apply succeeded but store persist failed", "runner", rec.ID, "err", err)
+			return view, fmt.Errorf("%w: container applied but failed to persist config: %v", ErrValidation, err)
+		}
+		m.cleanupStalePersistenceVolumes(ctx, before, rec)
+		return m.Get(ctx, id)
+	}
 	if err := m.Store.Update(rec); err != nil {
 		return View{}, err
-	}
-	if req.Apply {
-		// Already hold runner lock — call unlocked recreate to avoid deadlock.
-		// recreate performs errIfBusy.
-		view, recErr := m.recreate(ctx, id, RecreateRequest{Token: req.Token})
-		if recErr == nil {
-			m.cleanupStalePersistenceVolumes(ctx, before, rec)
-		}
-		return view, recErr
 	}
 	return m.Get(ctx, id)
 }
@@ -1134,18 +1392,63 @@ func (m *Manager) cleanupStalePersistenceVolumes(ctx context.Context, before, af
 func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) (View, error) {
 	unlock := m.lockRunner(id)
 	defer unlock()
-	return m.recreate(ctx, id, req)
-}
-
-func (m *Manager) recreate(ctx context.Context, id string, req RecreateRequest) (View, error) {
-	if m.Docker == nil {
-		return View{}, ErrDockerUnavailable
-	}
-	if !m.createLimiter.Allow() {
-		return View{}, fmt.Errorf("%w: too many create/recreate requests", ErrRateLimited)
-	}
 	rec, err := m.Store.Get(id)
 	if err != nil {
+		return View{}, err
+	}
+	return m.recreateRec(ctx, rec, req, true)
+}
+
+func (m *Manager) RecreateMissing(ctx context.Context, req RecreateMissingRequest) (RecreateMissingResult, error) {
+	out := RecreateMissingResult{
+		Recreated: []string{},
+		Failed:    []RecreateMissingFailure{},
+	}
+	runners, err := m.Store.List()
+	if err != nil {
+		return out, err
+	}
+	if len(runners) == 0 {
+		return out, nil
+	}
+	if err := m.requireDocker(); err != nil {
+		return out, err
+	}
+	views, err := m.List(ctx)
+	if err != nil {
+		return out, err
+	}
+	var missing []store.Runner
+	for _, v := range views {
+		if v.Status == "missing" {
+			missing = append(missing, v.Runner)
+		}
+	}
+	if len(missing) == 0 {
+		return out, nil
+	}
+	if !m.createLimiter.Allow() {
+		return out, fmt.Errorf("%w: too many create/recreate requests", ErrRateLimited)
+	}
+	for _, rec := range missing {
+		unlock := m.lockRunner(rec.ID)
+		view, recErr := m.recreateRec(ctx, rec, RecreateRequest{Token: req.Token}, false)
+		unlock()
+		if recErr != nil {
+			out.Failed = append(out.Failed, RecreateMissingFailure{
+				ID:    rec.ID,
+				Name:  rec.Name,
+				Error: RedactSecrets(recErr.Error()),
+			})
+			continue
+		}
+		out.Recreated = append(out.Recreated, view.ID)
+	}
+	return out, nil
+}
+
+func (m *Manager) recreateRec(ctx context.Context, rec store.Runner, req RecreateRequest, consumeQuota bool) (View, error) {
+	if err := m.requireDocker(); err != nil {
 		return View{}, err
 	}
 	if err := m.errIfBusy(ctx, rec); err != nil {
@@ -1160,20 +1463,19 @@ func (m *Manager) recreate(ctx context.Context, id string, req RecreateRequest) 
 		return View{}, err
 	}
 
-	// Detached lifecycle so client cancel cannot clear .runner then abort before start.
 	dctx, cancel := lifecycleContext()
 	defer cancel()
 
-	containerInfo, err := m.Docker.InspectByName(dctx, rec.ContainerName)
+	containerInfo, err := m.inspectContainer(dctx, rec.ContainerName)
 	if err != nil {
-		return View{}, fmt.Errorf("inspect container: %w", err)
+		slog.Warn("recreate: inspect container failed", "runner", rec.Name, "id", rec.ID, "err", err)
+		return View{}, wrapInspectErr(err)
 	}
 	volExists, volErr := m.Docker.VolumeExists(dctx, rec.VolumeName)
 	if volErr != nil {
 		return View{}, fmt.Errorf("inspect registration volume: %w", volErr)
 	}
 
-	// myoung34 only applies --work at configure time. Env/mount alone is not enough.
 	var agentWF string
 	var agentErr error
 	if volExists {
@@ -1187,39 +1489,87 @@ func (m *Manager) recreate(ctx context.Context, id string, req RecreateRequest) 
 		slog.Info("recreate: workdir reconfigure required", "reason", plan.Reason, "desired", desiredWork, "agent", agentWF)
 	}
 
-	// Only inject a registration token when reconfigure is required. Reusing an
-	// existing .runner with a fresh token forced a configure/listen/scrub cycle that
-	// raced GitHub sessions ("A session for this runner already exists").
 	token, resolveErr := m.resolveRecreateToken(dctx, rec.URL, req.Token, plan.Needs)
 	if resolveErr != nil {
 		reason := plan.Reason
 		if reason == "" {
 			reason = "reconfigure required"
 		}
+		slog.Warn("recreate: registration token required", "runner", rec.Name, "id", rec.ID, "reason", reason)
 		return View{}, fmt.Errorf("%w: %s — provide a registration token or configure GITHUB_PAT (agent workFolder is set only at configure time)", ErrValidation, reason)
 	}
 
-	// Stop the old container before clearing .runner so a failed remove cannot leave
-	// a running agent with a wiped registration file on the volume.
+	if consumeQuota && !m.createLimiter.Allow() {
+		return View{}, fmt.Errorf("%w: too many create/recreate requests", ErrRateLimited)
+	}
+
 	if containerInfo.Exists {
 		if err := m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, StopTimeoutSecs); err != nil && !docker.IsNotFound(err) {
 			return View{}, fmt.Errorf("remove container: %w", err)
 		}
 	}
+	cleared := false
 	if plan.Needs && volExists {
+		if err := m.backupRunnerConfig(dctx, rec.VolumeName); err != nil {
+			return View{}, fmt.Errorf("backup .runner: %w", err)
+		}
 		if err := m.clearRunnerConfigForReconfigure(dctx, rec.VolumeName); err != nil {
 			return View{}, fmt.Errorf("clear .runner for workdir reconfigure: %w", err)
 		}
+		cleared = true
 	}
 	m.removeLegacyWorkVolume(dctx, rec)
 	if err := m.startContainer(dctx, rec, token, info.OrgName()); err != nil {
+		slog.Warn("recreate: start failed", "runner", rec.Name, "id", rec.ID, "err", err)
+		if cleared {
+			if restErr := m.restoreRunnerConfig(dctx, rec.VolumeName); restErr != nil {
+				slog.Error("recreate: restore .runner after start failure", "runner", rec.ID, "err", restErr)
+			}
+		}
 		return View{}, err
 	}
-	return m.Get(dctx, id)
+	return m.Get(dctx, rec.ID)
+}
+
+func (m *Manager) backupRunnerConfig(ctx context.Context, volumeName string) error {
+	if volumeName == "" {
+		return nil
+	}
+	wh := m.workdirHostOrDocker()
+	if wh == nil {
+		return ErrDockerUnavailable
+	}
+	data, err := wh.ReadVolumeFile(ctx, volumeName, runnerConfigFile)
+	if err != nil {
+		if errors.Is(err, docker.ErrVolumeFileNotFound) || errors.Is(err, errNoRunnerConfig) {
+			return nil
+		}
+		return err
+	}
+	return wh.WriteVolumeFile(ctx, volumeName, runnerConfigBackupFile, data)
+}
+
+func (m *Manager) restoreRunnerConfig(ctx context.Context, volumeName string) error {
+	if volumeName == "" {
+		return nil
+	}
+	wh := m.workdirHostOrDocker()
+	if wh == nil {
+		return ErrDockerUnavailable
+	}
+	data, err := wh.ReadVolumeFile(ctx, volumeName, runnerConfigBackupFile)
+	if err != nil {
+		return err
+	}
+	if err := wh.WriteVolumeFile(ctx, volumeName, runnerConfigFile, data); err != nil {
+		return err
+	}
+	m.invalidateAgentWorkFolder(volumeName)
+	return nil
 }
 
 // resolveRecreateToken returns a registration token only when reconfigure is needed.
-// Otherwise returns empty so recreate reuses volume credentials without DEBUG_ONLY configure.
+// Otherwise returns empty so recreate reuses volume credentials without a configure phase.
 func (m *Manager) resolveRecreateToken(ctx context.Context, projectURL, reqToken string, needsReconfigure bool) (string, error) {
 	if !needsReconfigure {
 		return "", nil
@@ -1228,15 +1578,15 @@ func (m *Manager) resolveRecreateToken(ctx context.Context, projectURL, reqToken
 }
 
 func (m *Manager) applyLifecycle(ctx context.Context, id string, op func(context.Context, string) error) (View, error) {
-	if m.Docker == nil {
-		return View{}, ErrDockerUnavailable
+	if err := m.requireDocker(); err != nil {
+		return View{}, err
 	}
 	r, err := m.Store.Get(id)
 	if err != nil {
 		return View{}, err
 	}
 	if err := op(ctx, r.ContainerName); err != nil {
-		return View{}, err
+		return View{}, mapLifecycleDockerErr(err)
 	}
 	return m.Get(ctx, id)
 }
@@ -1244,15 +1594,15 @@ func (m *Manager) applyLifecycle(ctx context.Context, id string, op func(context
 func (m *Manager) Start(ctx context.Context, id string) (View, error) {
 	unlock := m.lockRunner(id)
 	defer unlock()
-	if m.Docker == nil {
-		return View{}, ErrDockerUnavailable
+	if err := m.requireDocker(); err != nil {
+		return View{}, err
 	}
 	r, err := m.Store.Get(id)
 	if err != nil {
 		return View{}, err
 	}
 	if err := m.ensureHooksThenStart(ctx, r); err != nil {
-		return View{}, err
+		return View{}, mapLifecycleDockerErr(err)
 	}
 	return m.Get(ctx, id)
 }
@@ -1260,7 +1610,9 @@ func (m *Manager) Start(ctx context.Context, id string) (View, error) {
 func (m *Manager) Stop(ctx context.Context, id string) (View, error) {
 	unlock := m.lockRunner(id)
 	defer unlock()
-	return m.applyLifecycle(ctx, id, func(ctx context.Context, name string) error {
+	dctx, cancel := docker.DetachedTimeout(detachedLifecycleTimeout)
+	defer cancel()
+	return m.applyLifecycle(dctx, id, func(ctx context.Context, name string) error {
 		return m.Docker.Stop(ctx, name)
 	})
 }
@@ -1268,17 +1620,19 @@ func (m *Manager) Stop(ctx context.Context, id string) (View, error) {
 func (m *Manager) Restart(ctx context.Context, id string) (View, error) {
 	unlock := m.lockRunner(id)
 	defer unlock()
-	if m.Docker == nil {
-		return View{}, ErrDockerUnavailable
+	if err := m.requireDocker(); err != nil {
+		return View{}, err
 	}
 	r, err := m.Store.Get(id)
 	if err != nil {
 		return View{}, err
 	}
-	if err := m.ensureHooksThenRestart(ctx, r); err != nil {
-		return View{}, err
+	dctx, cancel := docker.DetachedTimeout(detachedLifecycleTimeout)
+	defer cancel()
+	if err := m.ensureHooksThenRestart(dctx, r); err != nil {
+		return View{}, mapLifecycleDockerErr(err)
 	}
-	return m.Get(ctx, id)
+	return m.Get(dctx, id)
 }
 
 func (m *Manager) Delete(ctx context.Context, id string) error {
@@ -1291,36 +1645,37 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err := m.errIfBusy(ctx, r); err != nil {
 		return err
 	}
-	if m.Docker == nil {
-		return ErrDockerUnavailable
+	if err := m.requireDocker(); err != nil {
+		return err
 	}
+	dctx, cancel := docker.DetachedTimeout(detachedLifecycleTimeout)
+	defer cancel()
 	if m.PATConfigured() {
-		if err := m.GitHub.DeregisterRunner(ctx, r.URL, r.Name); err != nil {
+		if err := m.GitHub.DeregisterRunner(dctx, r.URL, r.Name); err != nil {
 			slog.Warn("github deregister failed; continuing local delete", "runner", r.Name, "err", err)
 		}
 	}
-	if err := m.Docker.Remove(ctx, r.ContainerName, r.VolumeName); err != nil {
-		if !docker.IsNotFound(err) {
-			return err
+	if err := m.Docker.RemoveContainerTimeout(dctx, r.ContainerName, StopTimeoutSecs); err != nil && !docker.IsNotFound(err) {
+		return err
+	}
+	if r.VolumeName != "" {
+		if err := m.Docker.RemoveVolume(dctx, r.VolumeName); err != nil && !docker.IsNotFound(err) {
+			return fmt.Errorf("remove registration volume: %w", err)
 		}
 	}
-	// Best-effort cleanup of obsolete Mountpoint work volumes from 0.3.1–0.3.3.
-	// Host workdir binds are never deleted.
-	m.removeLegacyWorkVolume(ctx, r)
+	m.removeLegacyWorkVolume(dctx, r)
 	m.invalidateAgentWorkFolder(r.VolumeName)
 	if cacheVol := resolveCacheVolumeName(r); cacheVol != "" {
 		others, listErr := m.Store.List()
 		removeCache := false
 		if listErr != nil {
 			slog.Warn("delete: list for cache refcount", "err", listErr)
-			// Without a refcount, only remove auto-named (owned) volumes.
 			removeCache = cacheVolumeOwned(r)
 		} else {
-			// This runner is still in the store; refs <= 1 means no other runner shares it.
 			removeCache = cacheVolumeRefs(others, cacheVol) <= 1
 		}
 		if removeCache {
-			if err := m.Docker.RemoveVolume(ctx, cacheVol); err != nil && !docker.IsNotFound(err) {
+			if err := m.Docker.RemoveVolume(dctx, cacheVol); err != nil && !docker.IsNotFound(err) {
 				slog.Warn("delete: remove cache volume", "volume", cacheVol, "err", err)
 			}
 		}
@@ -1333,10 +1688,14 @@ func (m *Manager) Logs(ctx context.Context, id string, follow bool, tail string)
 	if err != nil {
 		return nil, err
 	}
-	if m.Docker == nil {
-		return nil, ErrDockerUnavailable
+	if err := m.requireDocker(); err != nil {
+		return nil, err
 	}
-	return m.Docker.Logs(ctx, r.ContainerName, follow, tail)
+	rc, err := m.Docker.Logs(ctx, r.ContainerName, follow, tail)
+	if err != nil {
+		return nil, mapLifecycleDockerErr(err)
+	}
+	return rc, nil
 }
 
 // Reconcile syncs Docker managed containers with the store and records orphans.
@@ -1345,8 +1704,12 @@ func (m *Manager) Logs(ctx context.Context, id string, follow bool, tail string)
 func (m *Manager) Reconcile(ctx context.Context) {
 	m.reconcileMu.Lock()
 	defer m.reconcileMu.Unlock()
+	_ = m.ensureDocker()
 	if m.Docker == nil {
 		return
+	}
+	if err := m.Docker.RemoveExitedHelpers(ctx); err != nil {
+		slog.Debug("reconcile: remove exited helpers", "err", err)
 	}
 	runners, err := m.Store.List()
 	if err != nil {
@@ -1427,7 +1790,7 @@ func normalizeLabels(labels []string) []string {
 }
 
 func validateExtraEnv(env map[string]string) error {
-	for k := range env {
+	for k, v := range env {
 		k = strings.TrimSpace(k)
 		if k == "" {
 			return fmt.Errorf("%w: empty extra_env key", ErrValidation)
@@ -1438,23 +1801,72 @@ func validateExtraEnv(env map[string]string) error {
 		if strings.ContainsAny(k, "=\n\r") {
 			return fmt.Errorf("%w: invalid extra_env key", ErrValidation)
 		}
+		if strings.ContainsAny(v, "\n\r\x00") {
+			return fmt.Errorf("%w: extra_env %q contains invalid characters", ErrValidation, k)
+		}
 	}
 	return nil
 }
 
-func sanitizeErr(err error) error {
+func validateNetworkMode(mode string) error {
+	mode = strings.TrimSpace(mode)
+	switch mode {
+	case "", "bridge", "host", "none":
+		return nil
+	}
+	if strings.HasPrefix(mode, "container:") {
+		id := strings.TrimSpace(strings.TrimPrefix(mode, "container:"))
+		if id == "" || strings.ContainsAny(id, " \n\r\t") {
+			return fmt.Errorf("%w: invalid network_mode", ErrValidation)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: network_mode must be empty, bridge, host, none, or container:<id>", ErrValidation)
+}
+
+func validateResourceLimits(cpu float64, memMB int64) error {
+	if cpu < 0 || math.IsNaN(cpu) || math.IsInf(cpu, 0) {
+		return fmt.Errorf("%w: cpu_limit must be >= 0", ErrValidation)
+	}
+	if cpu > maxCPULimit {
+		return fmt.Errorf("%w: cpu_limit exceeds %v", ErrValidation, maxCPULimit)
+	}
+	if memMB < 0 {
+		return fmt.Errorf("%w: memory_limit_mb must be >= 0", ErrValidation)
+	}
+	if memMB > maxMemoryLimitMB {
+		return fmt.Errorf("%w: memory_limit_mb exceeds %d", ErrValidation, maxMemoryLimitMB)
+	}
+	return nil
+}
+
+func wrapInspectErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	msg := err.Error()
-	msg = strings.ReplaceAll(msg, "Bearer ", "Bearer ***")
-	if i := strings.Index(strings.ToLower(msg), "ghp_"); i >= 0 {
-		msg = msg[:i] + "ghp_***"
+	if errors.Is(err, errInspectUnavailable) {
+		return ErrDockerUnavailable
 	}
-	if i := strings.Index(strings.ToLower(msg), "github_pat_"); i >= 0 {
-		msg = msg[:i] + "github_pat_***"
+	if docker.IsContextError(err) {
+		return err
 	}
-	return fmt.Errorf("%s", msg)
+	return fmt.Errorf("%w: %w", ErrDockerUnavailable, err)
+}
+
+func mapLifecycleDockerErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrValidation) || errors.Is(err, ErrDockerUnavailable) {
+		return err
+	}
+	if docker.IsNotFound(err) {
+		return fmt.Errorf("%w: container is missing; recreate it", ErrValidation)
+	}
+	if docker.IsContextError(err) {
+		return err
+	}
+	return err
 }
 
 type rateLimiter struct {

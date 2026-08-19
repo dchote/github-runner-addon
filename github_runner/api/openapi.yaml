@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GitHub Runner Manager API
-  version: 0.5.3
+  version: 0.6.0
   description: |
     Control-plane API for Docker-based GitHub Actions self-hosted runners.
 
@@ -63,13 +63,38 @@ paths:
               schema:
                 $ref: "#/components/schemas/RunnerEnvelope"
         "400":
-          description: Validation error
+          description: Validation error (including missing :local image)
         "409":
           description: Duplicate name or container
         "429":
           description: Rate limited
         "502":
-          description: GitHub API error
+          description: GitHub API error or image pull failure
+        "503":
+          description: Docker unavailable
+  /runners/recreate-missing:
+    post:
+      summary: Recreate every runner whose container is missing (operator fleet restore)
+      operationId: recreateMissingRunners
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecreateRunnerRequest"
+      responses:
+        "200":
+          description: OK (partial failures are listed in data.failed; reconcile stays read-only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecreateMissingEnvelope"
+        "400":
+          description: Validation error
+        "429":
+          description: Rate limited (one quota token for the batch)
+        "502":
+          description: GitHub API error or image pull failure
         "503":
           description: Docker unavailable
   /runners/{id}:
@@ -106,9 +131,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/RunnerEnvelope"
         "400":
-          description: Validation error
+          description: Validation error (including missing image or failed configure)
         "404":
           description: Not found
+        "409":
+          description: Runner busy when apply=true and the managed container is running
+        "502":
+          description: GitHub API error or image pull failure
+        "503":
+          description: Docker unavailable
     delete:
       summary: Delete runner (local; GitHub deregister when PAT configured)
       operationId: deleteRunner
@@ -119,6 +150,8 @@ paths:
           description: OK
         "404":
           description: Not found
+        "409":
+          description: Runner busy (only when the managed container is running)
         "503":
           description: Docker unavailable
   /runners/{id}/start:
@@ -134,6 +167,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RunnerEnvelope"
+        "400":
+          description: Validation error (container missing — recreate it)
         "404":
           description: Not found
         "503":
@@ -168,13 +203,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RunnerEnvelope"
+        "400":
+          description: Validation error (container missing — recreate it)
         "404":
           description: Not found
         "503":
           description: Docker unavailable
   /runners/{id}/recreate:
     post:
-      summary: Recreate runner container (keeps volume when possible)
+      summary: Recreate runner container (keeps reusable volume credentials; token/PAT when volume missing or empty)
       operationId: recreateRunner
       parameters:
         - $ref: "#/components/parameters/RunnerId"
@@ -192,11 +229,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/RunnerEnvelope"
         "400":
-          description: Validation error
+          description: Validation error (including missing image or failed configure)
         "404":
           description: Not found
+        "409":
+          description: Runner busy (only when the managed container is running)
         "429":
           description: Rate limited
+        "502":
+          description: GitHub API error or image pull failure
         "503":
           description: Docker unavailable
   /runners/{id}/logs:
@@ -221,6 +262,8 @@ paths:
             text/plain:
               schema:
                 type: string
+        "400":
+          description: Validation error (container missing — recreate it)
         "404":
           description: Not found
         "503":
@@ -263,8 +306,10 @@ components:
           type: object
           additionalProperties:
             type: string
+          description: Extra container env; values must not contain newline, CR, or NUL
         network_mode:
           type: string
+          description: Empty, bridge, host, none, or container:<id>
         mount_docker_sock:
           type: boolean
           description: Override global MOUNT_DOCKER_SOCK for this runner
@@ -293,8 +338,10 @@ components:
           type: object
           additionalProperties:
             type: string
+          description: Extra container env; values must not contain newline, CR, or NUL
         network_mode:
           type: string
+          description: Empty, bridge, host, none, or container:<id>
         mount_docker_sock:
           type: boolean
         reset_mount_docker_sock:
@@ -319,8 +366,34 @@ components:
         token:
           type: string
           description: |
-            Required when the data volume is missing, or when .runner workFolder does not
-            match the host workdir bind (reconfigure). Optional for plain remount when PAT set.
+            Required when the data volume is missing or empty (no .runner), or when
+            workFolder does not match the host workdir bind (reconfigure). Optional
+            override when GITHUB_PAT is configured. Unused when volume credentials
+            can be reused.
+    RecreateMissingEnvelope:
+      type: object
+      properties:
+        result:
+          type: string
+          enum: [ok]
+        data:
+          type: object
+          properties:
+            recreated:
+              type: array
+              items:
+                type: string
+            failed:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  error:
+                    type: string
 
     RunnerStatus:
       type: string
@@ -394,8 +467,10 @@ components:
           type: object
           additionalProperties:
             type: string
+          description: Extra container env; values must not contain newline, CR, or NUL
         network_mode:
           type: string
+          description: Empty, bridge, host, none, or container:<id>
         mount_docker_sock:
           type: boolean
         cache:
@@ -493,6 +568,8 @@ components:
           properties:
             status:
               type: string
+              enum: [ok, degraded]
+              description: ok when docker and store are healthy; degraded otherwise (HTTP stays 200)
             version:
               type: string
             github_pat_configured:

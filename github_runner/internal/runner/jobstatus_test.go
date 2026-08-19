@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dchote/github-runner-addon/internal/container/docker"
 	"github.com/dchote/github-runner-addon/internal/store"
 )
 
@@ -60,7 +61,7 @@ func TestBuildEnvJobHooks(t *testing.T) {
 	m := &Manager{}
 	env := m.buildEnv(
 		store.Runner{Name: "n", Scope: "repo", URL: "https://github.com/a/b", Labels: []string{"self-hosted"}},
-		"", "", "/srv/gha-work/n", false,
+		"", "", "/srv/gha-work/n",
 	)
 	joined := strings.Join(env, "\n")
 	if !strings.Contains(joined, "ACTIONS_RUNNER_HOOK_JOB_STARTED=/srv/gha-work/n/.gha-addon/hooks/job-started.sh") {
@@ -130,7 +131,8 @@ func TestEnsureJobHookScriptsDoesNotSeedStatus(t *testing.T) {
 func TestApplyJobStatusFromHostFile(t *testing.T) {
 	fh := newFakeWorkdirHost()
 	workdir := "/srv/gha-work/lab"
-	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":true,"repository":"a/b","workflow":"w","job":"j","updated_at":"2026-08-08T11:59:00Z"}`)
+	now := time.Now().UTC().Format(time.RFC3339)
+	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":true,"repository":"a/b","workflow":"w","job":"j","updated_at":"` + now + `"}`)
 	m := &Manager{workdirHost: fh}
 	v := &View{WorkdirEffective: workdir}
 	m.applyJobStatus(context.Background(), v, "", workdir, true)
@@ -155,17 +157,85 @@ func TestApplyJobStatusListModeSkipsHostHelper(t *testing.T) {
 func TestErrIfBusy(t *testing.T) {
 	fh := newFakeWorkdirHost()
 	workdir := "/srv/gha-work/lab"
-	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":true,"repository":"o/r","workflow":"Release","job":"build","updated_at":"2026-08-08T11:59:00Z"}`)
+	now := time.Now().UTC().Format(time.RFC3339)
+	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":true,"repository":"o/r","workflow":"Release","job":"build","updated_at":"` + now + `"}`)
 	m := &Manager{workdirHost: fh}
 	rec := store.Runner{Name: "lab", WorkdirHostPath: workdir, ContainerName: "gha-runner-lab"}
 	err := m.errIfBusy(context.Background(), rec)
 	if err == nil || !errors.Is(err, ErrRunnerBusy) {
 		t.Fatalf("want ErrRunnerBusy, got %v", err)
 	}
-	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":false,"updated_at":"2026-08-08T11:59:00Z"}`)
+	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":false,"updated_at":"` + now + `"}`)
 	m.invalidateJobStatusCache(workdir)
 	if err := m.errIfBusy(context.Background(), rec); err != nil {
 		t.Fatalf("idle should allow: %v", err)
+	}
+}
+
+func TestErrIfBusySkippedWhenContainerMissing(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	workdir := "/srv/gha-work/lab"
+	now := time.Now().UTC().Format(time.RFC3339)
+	fh.hostFiles[jobStatusHostPath(workdir)] = []byte(`{"busy":true,"repository":"o/r","workflow":"Release","job":"build","updated_at":"` + now + `"}`)
+	m := &Manager{
+		workdirHost: fh,
+		inspectFn: func(_ context.Context, _ string) (docker.InspectInfo, error) {
+			return docker.InspectInfo{Exists: false}, nil
+		},
+	}
+	rec := store.Runner{Name: "lab", WorkdirHostPath: workdir, ContainerName: "gha-runner-lab"}
+	if err := m.errIfBusy(context.Background(), rec); err != nil {
+		t.Fatalf("missing container must not 409 busy: %v", err)
+	}
+	m.inspectFn = func(_ context.Context, _ string) (docker.InspectInfo, error) {
+		return docker.InspectInfo{Exists: true, Running: false, Status: "exited"}, nil
+	}
+	m.invalidateJobStatusCache(workdir)
+	if err := m.errIfBusy(context.Background(), rec); err != nil {
+		t.Fatalf("exited container must not 409 busy: %v", err)
+	}
+	m.inspectFn = func(_ context.Context, _ string) (docker.InspectInfo, error) {
+		return docker.InspectInfo{Exists: true, Running: true, Status: "running"}, nil
+	}
+	m.invalidateJobStatusCache(workdir)
+	err := m.errIfBusy(context.Background(), rec)
+	if err == nil || !errors.Is(err, ErrRunnerBusy) {
+		t.Fatalf("running busy want ErrRunnerBusy, got %v", err)
+	}
+}
+
+func TestErrIfBusyInspectErrorFailsClosed(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	workdir := "/srv/gha-work/lab"
+	m := &Manager{
+		workdirHost: fh,
+		inspectFn: func(_ context.Context, _ string) (docker.InspectInfo, error) {
+			return docker.InspectInfo{}, errors.New("daemon timeout")
+		},
+	}
+	rec := store.Runner{Name: "lab", WorkdirHostPath: workdir, ContainerName: "gha-runner-lab"}
+	err := m.errIfBusy(context.Background(), rec)
+	if err == nil || errors.Is(err, ErrRunnerBusy) {
+		t.Fatalf("inspect failure must fail closed (not skip busy), got %v", err)
+	}
+	if !errors.Is(err, ErrDockerUnavailable) {
+		t.Fatalf("inspect failure should map to docker unavailable, got %v", err)
+	}
+}
+
+func TestErrIfBusyUnknownWhileRunningFailsClosed(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	workdir := "/srv/gha-work/lab"
+	m := &Manager{
+		workdirHost: fh,
+		inspectFn: func(_ context.Context, _ string) (docker.InspectInfo, error) {
+			return docker.InspectInfo{Exists: true, Running: true, Status: "running"}, nil
+		},
+	}
+	rec := store.Runner{Name: "lab", WorkdirHostPath: workdir, ContainerName: "gha-runner-lab"}
+	err := m.errIfBusy(context.Background(), rec)
+	if err == nil || !errors.Is(err, ErrRunnerBusy) {
+		t.Fatalf("running with missing status.json must fail closed, got %v", err)
 	}
 }
 
@@ -173,14 +243,15 @@ func TestJobStatusCacheTTL(t *testing.T) {
 	fh := newFakeWorkdirHost()
 	workdir := "/srv/gha-work/lab"
 	path := jobStatusHostPath(workdir)
-	fh.hostFiles[path] = []byte(`{"busy":false,"updated_at":"2026-08-08T11:00:00Z"}`)
+	now := time.Now().UTC().Format(time.RFC3339)
+	fh.hostFiles[path] = []byte(`{"busy":false,"updated_at":"` + now + `"}`)
 	m := &Manager{workdirHost: fh}
 	v := &View{}
 	m.applyJobStatus(context.Background(), v, "", workdir, true)
 	if v.JobState != jobStateIdle {
 		t.Fatalf("first read: %q", v.JobState)
 	}
-	fh.hostFiles[path] = []byte(`{"busy":true,"repository":"x/y","updated_at":"2026-08-08T11:59:00Z"}`)
+	fh.hostFiles[path] = []byte(`{"busy":true,"repository":"x/y","updated_at":"` + now + `"}`)
 	v2 := &View{}
 	m.applyJobStatus(context.Background(), v2, "", workdir, true)
 	if v2.JobState != jobStateIdle {

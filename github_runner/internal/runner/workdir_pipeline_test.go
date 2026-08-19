@@ -64,6 +64,16 @@ func (f *fakeWorkdirHost) ChmodHostPath(_ context.Context, _ string, _ os.FileMo
 	return nil
 }
 
+func (f *fakeWorkdirHost) WriteVolumeFile(_ context.Context, volumeName, relPath string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.files == nil {
+		f.files = map[string][]byte{}
+	}
+	f.files[f.key(volumeName, relPath)] = append([]byte(nil), data...)
+	return nil
+}
+
 func (f *fakeWorkdirHost) ReadVolumeFile(_ context.Context, volumeName, relPath string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -213,20 +223,86 @@ func TestEnrichListUsesCacheOnly(t *testing.T) {
 	}
 }
 
-func TestEnrichGetBypassesCache(t *testing.T) {
+func TestEnrichGetWhenNotRunningUsesCache(t *testing.T) {
 	fh := newFakeWorkdirHost()
 	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"/srv/gha-work/lab"}`)
 	rec := store.Runner{ContainerName: "gha-runner-lab", VolumeName: "vol", Name: "lab"}
 	m := &Manager{
 		workdirHost: fh,
 		agentWF:     map[string]agentWorkFolderCache{"vol": {folder: "/tmp/runner/work"}},
+		inspectFn: func(_ context.Context, _ string) (docker.InspectInfo, error) {
+			return docker.InspectInfo{Exists: false, Name: rec.ContainerName}, nil
+		},
 	}
 	v := m.enrich(context.Background(), rec, enrichOpts{workdirDiag: true})
-	if fh.reads != 1 {
-		t.Fatalf("get must live-read, reads=%d", fh.reads)
+	if fh.reads != 0 {
+		t.Fatalf("missing container must not live-read volume, reads=%d", fh.reads)
+	}
+	if v.Status != "missing" {
+		t.Fatalf("status=%q", v.Status)
+	}
+	if v.WorkdirAgent != "/tmp/runner/work" {
+		t.Fatalf("cache-only agent=%q", v.WorkdirAgent)
+	}
+}
+
+func TestEnrichGetLiveReadsWhenRunning(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"/ignored"}`)
+	rec := store.Runner{ContainerName: "gha-runner-lab", VolumeName: "vol", Name: "lab"}
+	m := &Manager{
+		workdirHost: fh,
+		agentWF:     map[string]agentWorkFolderCache{"vol": {folder: "/tmp/runner/work"}},
+		inspectFn: func(_ context.Context, _ string) (docker.InspectInfo, error) {
+			return docker.InspectInfo{Exists: true, Running: true, Status: "running", Name: rec.ContainerName}, nil
+		},
+		readContainerFileFn: func(_ context.Context, _, _ string) ([]byte, error) {
+			return []byte(`{"workFolder":"/srv/gha-work/lab"}`), nil
+		},
+	}
+	v := m.enrich(context.Background(), rec, enrichOpts{workdirDiag: true})
+	if fh.reads != 0 {
+		t.Fatalf("running get must CopyFromContainer, not alpine volume, reads=%d", fh.reads)
 	}
 	if v.WorkdirAgent != "/srv/gha-work/lab" || v.WorkdirMismatch {
 		t.Fatalf("get enrich: agent=%q mismatch=%v", v.WorkdirAgent, v.WorkdirMismatch)
+	}
+}
+
+func TestReadAgentWorkFolderPreferContainerSkipsVolumeOnNotFound(t *testing.T) {
+	fh := newFakeWorkdirHost()
+	fh.files[fh.key("vol", runnerConfigFile)] = []byte(`{"workFolder":"/srv/gha-work/lab"}`)
+	m := &Manager{
+		workdirHost: fh,
+		readContainerFileFn: func(_ context.Context, _, _ string) ([]byte, error) {
+			return nil, docker.ErrContainerFileNotFound
+		},
+	}
+	rec := store.Runner{ContainerName: "gha-runner-lab", VolumeName: "vol"}
+	_, err := m.readAgentWorkFolderPreferContainer(context.Background(), rec, true)
+	if !errors.Is(err, errNoRunnerConfig) {
+		t.Fatalf("want errNoRunnerConfig, got %v", err)
+	}
+	if fh.reads != 0 {
+		t.Fatalf("container file-not-found must not alpine-read volume, reads=%d", fh.reads)
+	}
+}
+
+func TestEnrichListedMissingSkipsInspect(t *testing.T) {
+	inspected := 0
+	rec := store.Runner{ContainerName: "gha-runner-lab", VolumeName: "vol", Name: "lab"}
+	m := &Manager{
+		inspectFn: func(_ context.Context, _ string) (docker.InspectInfo, error) {
+			inspected++
+			return docker.InspectInfo{Exists: true, Running: true, Status: "running"}, nil
+		},
+	}
+	v := m.enrichWithManaged(context.Background(), rec, nil, true, enrichOpts{})
+	if inspected != 0 {
+		t.Fatalf("successful ListManaged miss must not inspect, n=%d", inspected)
+	}
+	if v.Status != "missing" {
+		t.Fatalf("status=%q", v.Status)
 	}
 }
 

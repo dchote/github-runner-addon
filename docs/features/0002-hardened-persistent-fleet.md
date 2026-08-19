@@ -41,6 +41,6 @@ Network trust only. Do not expose `:8099` on a public interface. Home Assistant 
 - Registration tokens are never stored in `runners.json`.
 - PAT is never written into runner containers.
 - Delete with PAT: best-effort GitHub deregister, then local container/volume removal (local delete proceeds after warn if GitHub fails).
-- Recreate keeps the named volume when possible. When the data volume is **missing** or workdir reconfigure is required, a registration token or configured PAT is **required**. When registration files on the volume are reusable, recreate starts without a token (no mint/scrub) so GitHub sessions are not interrupted.
+- Recreate keeps the named volume when possible. When the data volume is **missing or empty** (no `.runner`) or workdir reconfigure is required, a registration token or configured PAT is **required**. When registration files on the volume are reusable, recreate starts without a token (no mint/scrub) so GitHub sessions are not interrupted. After a Docker wipe, Recreate re-registers from stored config; see [0007](0007-reset-resilient-recreate.md).
 - Operators can **edit** labels and runtime fields in the UI (`PATCH`); Save & apply recreates the container.
 - Orphan managed containers are listed in the UI from health.

@@ -64,16 +64,16 @@ Creating a runner:
    (the deregistration flag is required with reusage or the image entrypoint exits 1;
    hooks write `$RUNNER_WORKDIR/.gha-addon/status.json` for idle/busy — see [0005](features/0005-runner-job-state.md)).
 5. Labels: `com.github-runner-addon.managed=true`, `com.github-runner-addon.id=<id>`.
-6. Configure-only start (`DEBUG_ONLY=true` + token) until `.runner` is on the volume; on failure roll back.
+6. Configure-only start (`RUNNER_TOKEN`, CMD `true`, no `DEBUG_ONLY`) until `.runner` is on the volume; on failure roll back. See [0007](features/0007-reset-resilient-recreate.md).
 7. Start the long-running listener **without** `RUNNER_TOKEN` (registration files remain on the volume).
 
-List merges JSON records with a single batched `ListManaged` (label filter) plus parallel enrich — not N× `InspectByName`. Missing containers report `missing`; when Docker is unavailable, status stays `unknown`. Running containers get `job_state` / `current_job` from cached/`CopyFromContainer` `status.json` only (no alpine host-file helpers on List). Get/lifecycle may fall back to host reads. Health uses cheap `StatusCounts` (same ListManaged path, no job-status). Bind caches inject `RUNNER_CACHE`; views expose `cache_effective`. Startup/periodic reconcile does not mutate the store for missing containers; it inventories unmanaged labeled **orphan** containers (no matching store row) and exposes them on `/api/v1/health`.
+List merges JSON records with a single batched `ListManaged` (label filter) plus parallel enrich — not N× `InspectByName`. Names absent from a successful `ListManaged` are `missing` without a follow-up inspect. Missing containers report `missing`; when Docker is unavailable, status stays `unknown`. Running containers get `job_state` / `current_job` from cached/`CopyFromContainer` `status.json` only (no alpine host-file helpers on List). Get/lifecycle may fall back to host reads for job status; Get live-reads `.runner` via `CopyFromContainer` only while running. Health uses cheap `StatusCounts` (same ListManaged path, no job-status). Bind caches inject `RUNNER_CACHE`; views expose `cache_effective`. Startup/periodic reconcile does not mutate the store for missing containers; it inventories unmanaged labeled **orphan** containers (no matching store row) and exposes them on `/api/v1/health`, and removes **exited** alpine helper containers. After a Docker reset, operators Recreate missing runners (token/PAT when the data volume is gone or empty) via Recreate or **Recreate missing**.
 
 Upstream image behavior (tools inside the container, registration edge cases, OS packages) is documented in [myoung34/docker-github-actions-runner](https://github.com/myoung34/docker-github-actions-runner). Prefer pinning `RUNNER_IMAGE` to a digest.
 
 ## Ports
 
-Default listen: `:8099` (`HTTP_PORT` / `-http-port`). HA ingress uses the same port. Standalone compose binds `127.0.0.1:8099` by default.
+Default listen: inside Docker / Home Assistant, all interfaces (`:HTTP_PORT`) so ingress and published ports work; on a host binary, `127.0.0.1:HTTP_PORT`. Override with `LISTEN_ADDR`. HA ingress uses the same port. Standalone compose binds `127.0.0.1:8099` by default.
 
 ## Persistence (Home Assistant)
 
@@ -93,6 +93,7 @@ The SPA injects `<base href>` from `X-Ingress-Path` (and the UI resolves API/WS 
 | `MOUNT_DOCKER_SOCK` | `false` | Bind host Docker socket into runner containers (opt-in; enabled in compose/app options) |
 | `RUNNER_IMAGE` | `myoung34/github-runner:latest` | Default [myoung34](https://github.com/myoung34/docker-github-actions-runner) image for new runners (prefer a digest for pinning) |
 | `DATA_DIR` | `./data` or `/data` | Persist `runners.json` (HA apps use `/data`, always mounted and backed up) |
+| `LISTEN_ADDR` | _(empty)_ | Process bind address. Unset: all interfaces in Docker/HA, loopback on a host binary |
 | `GITHUB_PAT` | _(empty)_ | Optional PAT for minting registration tokens and deregistering runners |
 | `APP_VERSION` | image `BUILD_VERSION` / `DefaultVersion` | Reported in logs and `/api/v1/health` (keep in sync via `./scripts/bump-version.sh`) |
 

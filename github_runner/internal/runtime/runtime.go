@@ -9,7 +9,7 @@ import (
 const (
 	DefaultHTTPPort = "8099"
 	DefaultDataDir  = "./data"
-	DefaultVersion  = "0.5.3"
+	DefaultVersion  = "0.6.0"
 )
 
 // Config holds process configuration.
@@ -51,7 +51,15 @@ func (c Config) Addr() string {
 	if c.ListenAddr != "" {
 		return c.ListenAddr
 	}
-	return ":" + c.HTTPPort
+	// Inside Docker / Home Assistant the process must listen on all interfaces so
+	// ingress and published ports can connect. On a host binary, bind loopback.
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return ":" + c.HTTPPort
+	}
+	if os.Getenv("SUPERVISOR_TOKEN") != "" {
+		return ":" + c.HTTPPort
+	}
+	return "127.0.0.1:" + c.HTTPPort
 }
 
 func (c Config) EnsureDataDir() error {

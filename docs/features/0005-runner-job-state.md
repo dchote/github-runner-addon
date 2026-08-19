@@ -35,7 +35,7 @@ No image fork; no PAT; no job history store.
 
 **UI:** Status column shows `idle` / `busy` / `unknown` when the container is running; otherwise shows container status. Details keep container status and add a Current job block when busy. Summary chips remain lifecycle counts (optional Busy count). While `job_state=busy`, the UI disables **Edit**, **Delete**, and **Recreate** (start/stop/restart/logs stay available). Dialogs already open may still be confirmed.
 
-**API (0.5.3+):** `POST …/recreate`, `DELETE …/runners/{id}`, and `PATCH` with `apply=true` return **409 `RUNNER_BUSY`** when `status.json` reports busy, so applying cache/workdir changes cannot kill an in-flight Actions job (GitHub then reports the runner lost communication). Stop/restart remain available for emergency intervention.
+**API (0.5.3+):** `POST …/recreate`, `DELETE …/runners/{id}`, and `PATCH` with `apply=true` return **409 `RUNNER_BUSY`** when the **managed container is running** and `status.json` reports busy, so applying cache/workdir changes cannot kill an in-flight Actions job (GitHub then reports the runner lost communication). A running container with missing, unreadable, or **unknown** `status.json` also **409**s (cannot verify idle). Stop/restart remain available for emergency intervention. Missing or exited containers do not 409 from leftover host `status.json` (Docker reset / killed worker). If inspect itself fails, the request **fails closed** with **503 `DOCKER_UNAVAILABLE`**.
 
 ## Stale busy
 

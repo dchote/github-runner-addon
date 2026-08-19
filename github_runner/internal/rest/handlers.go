@@ -29,8 +29,15 @@ type Handlers struct {
 func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 	dockerOK := false
 	var dockerErr string
-	if h.Docker != nil {
-		if err := h.Docker.Ping(r.Context()); err == nil {
+	if h.Manager != nil {
+		_ = h.Manager.EnsureDocker()
+	}
+	dockerClient := h.Docker
+	if h.Manager != nil && h.Manager.Docker != nil {
+		dockerClient = h.Manager.Docker
+	}
+	if dockerClient != nil {
+		if err := dockerClient.Ping(r.Context()); err == nil {
 			dockerOK = true
 		} else {
 			dockerErr = publicErr(err)
@@ -68,8 +75,13 @@ func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 		orphans = h.Manager.Orphans()
 	}
 
+	healthStatus := "ok"
+	if !dockerOK || !storeOK {
+		healthStatus = "degraded"
+	}
+
 	WriteOK(w, http.StatusOK, map[string]interface{}{
-		"status":  "ok",
+		"status":  healthStatus,
 		"version": version,
 		"docker": map[string]interface{}{
 			"available": dockerOK,
@@ -159,6 +171,22 @@ func (h *Handlers) RecreateRunner(w http.ResponseWriter, r *http.Request) {
 	WriteOK(w, http.StatusOK, v)
 }
 
+func (h *Handlers) RecreateMissingRunners(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxCreateBodyBytes)
+	var req runner.RecreateMissingRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body", nil)
+			return
+		}
+	}
+	v, err := h.Manager.RecreateMissing(r.Context(), req)
+	if h.writeRunnerErr(w, err) {
+		return
+	}
+	WriteOK(w, http.StatusOK, v)
+}
+
 func (h *Handlers) StartRunner(w http.ResponseWriter, r *http.Request) {
 	h.applyLifecycle(w, r, h.Manager.Start)
 }
@@ -242,6 +270,8 @@ func (h *Handlers) writeRunnerErr(w http.ResponseWriter, err error) bool {
 		WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", publicErr(err), nil)
 	case errors.Is(err, runner.ErrGitHub):
 		WriteError(w, http.StatusBadGateway, "GITHUB_ERROR", publicErr(err), nil)
+	case errors.Is(err, runner.ErrImagePull):
+		WriteError(w, http.StatusBadGateway, "IMAGE_PULL_ERROR", publicErr(err), nil)
 	case errors.Is(err, runner.ErrRateLimited):
 		WriteError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many create/recreate requests; try again shortly", nil)
 	case errors.Is(err, runner.ErrDockerUnavailable), isDockerUnavailable(err):
@@ -262,6 +292,7 @@ func publicErr(err error) string {
 	for _, prefix := range []string{
 		"validation error: ",
 		"github api error: ",
+		"image pull failed: ",
 		"rate limited: ",
 		"docker unavailable: ",
 		"runner busy: ",
@@ -274,7 +305,7 @@ func publicErr(err error) string {
 	if len(msg) > 500 {
 		return msg[:500] + "…"
 	}
-	return msg
+	return runner.RedactSecrets(msg)
 }
 
 func isDockerUnavailable(err error) bool {

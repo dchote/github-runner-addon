@@ -17,11 +17,13 @@ Managed containers carry:
 - `com.github-runner-addon.managed=true`
 - `com.github-runner-addon.id=<runner-uuid>`
 
+One-shot alpine helpers used for host/volume file ops carry `com.github-runner-addon.helper=true` (not the managed label — they are not fleet members). Helper create/start is capped by a shared semaphore (`ReadVolumeFile` included).
+
 ## Volumes
 
 Each runner gets a named volume mounted at the path set in `CONFIGURED_ACTIONS_RUNNER_FILES_DIR` so registration survives container recreate. When that dir is set, the image also requires `DISABLE_AUTOMATIC_DEREGISTRATION=true` or its entrypoint exits 1 after registration.
 
-Registration uses a two-phase start: a one-shot container with `RUNNER_TOKEN` and `DEBUG_ONLY=true` (configure only, no listener), then a long-running container **without** `RUNNER_TOKEN` so `docker inspect` never retains the short-lived token and a live GitHub session is never killed to scrub it. Recreate that only refreshes env/mounts reuses volume credentials and skips configure.
+Registration uses a two-phase start: a one-shot container with `RUNNER_TOKEN`, **no** `DEBUG_ONLY` (upstream skips `config.sh` when that flag is set and `.runner` is missing), `RestartPolicy=no`, and CMD `true` so the entrypoint configures then exits without listening; then a long-running container **without** `RUNNER_TOKEN` so `docker inspect` never retains the short-lived token. Recreate that only refreshes env/mounts reuses volume credentials and skips configure. After a Docker wipe (missing/empty data volume), Recreate re-runs configure with a token or PAT — see [0007](../features/0007-reset-resilient-recreate.md). Custom images that ignore Docker `CMD` may listen during configure; prefer myoung34 or an entrypoint that execs CMD after `config.sh`.
 
 ### Persistent cache and workdir
 
@@ -39,9 +41,13 @@ Before bind-mount, the manager `mkdir -p`s missing host dirs via a one-shot help
 
 `myoung34/github-runner` sets `--work` only at **configure** time. Recreate stops the container first, then clears `.runner` when `workFolder` differs, then starts with a token/PAT. After start, the manager asserts agent `workFolder` matches the host bind and returns an error if it does not (fail closed). Env alone never moves the agent workdir.
 
-Create/recreate/save-apply Docker work runs on a detached lifecycle deadline so client disconnect cannot cancel mid-pipeline (especially after clearing `.runner`). Transient Docker cancel while reading `.runner` does not force a reconfigure wipe.
+Create/recreate/save-apply Docker work runs on a detached lifecycle deadline so client disconnect cannot cancel mid-pipeline (especially after clearing `.runner`). Recreate copies `.runner` to `.runner.bak` before a workdir reconfigure wipe and restores it if start fails. Transient Docker cancel while reading `.runner` does not force a reconfigure wipe.
 
-Container `StopTimeout` is **120s** for managed runners. API stop/restart/delete timeouts are sized above that grace. Stop/restart use the container’s configured timeout, or **30s** if unset (e.g. older containers).
+Container `StopTimeout` is **120s** for managed runners. API stop/restart/delete use a detached Docker context sized above that grace so ingress cancel cannot abort mid-remove. Stop/restart use the container’s configured timeout, or **30s** if unset (e.g. older containers).
+
+`Docker.Remove` returns volume-remove errors. Delete removes the container first, then the registration volume, and **does not** drop the store row if volume remove fails (except not-found).
+
+Reconcile sweeps **exited** helper-labeled alpine containers. Managed orphans stay warn-only.
 
 **Permissions:** the default image runs as root. For non-root images/users, `chown` work and cache host paths to that uid (often `1000`), or mount cache read-only. Rejected paths include `/`, `/etc`, `/proc`, `/sys`, docker.sock, and workdir under `/var/lib/docker`.
 

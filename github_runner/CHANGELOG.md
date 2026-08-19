@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
+
+- **Reset-resilient recreate:** configure phase no longer uses `DEBUG_ONLY` (upstream skips `config.sh` when that flag is set and `.runner` is missing). Configure uses `RUNNER_TOKEN` + CMD `true` + `restart=no`, then a tokenless listener. Recreate works after a Docker wipe with a token/PAT — see [0007](../docs/features/0007-reset-resilient-recreate.md)
+- Do not 409 `RUNNER_BUSY` when the managed container is missing or exited (leftover host `status.json` after a Docker reset); inspect failures fail closed as **503**; a **running** container with missing/unreadable/unknown `status.json` is **409**
+- Create rollback keeps the store row and data volume when `.runner` or a managed container exists; recreate restores `.runner` from backup if start fails; Save & apply persists only after a successful recreate
+- Create/recreate rate-limit quota is consumed only after validation (400/404 do not count); extra_env values, CPU/memory caps, and `network_mode` are validated
+- Operator **Recreate missing** (`POST /api/v1/runners/recreate-missing`) restores a Docker-reset fleet; Start/restart/logs on a missing container return **400**
+- Listen wait timeout while the container is still running fails create/recreate (never 201); leftover configure containers with `RUNNER_TOKEN` are not adopted as the listener
+- `GET /runners/{id}` reads `.runner` via `CopyFromContainer` while running and skips volume helpers when missing; configure wait does not alpine-poll on file-not-found; `ReadVolumeFile` does not auto-create missing volumes and shares the helper semaphore
+- List after a successful `ListManaged` marks absent names `missing` without `InspectByName`
+- Clear error when image is missing (`:local` tags are not pulled, **400**); registry pull failures are **502 `IMAGE_PULL_ERROR`**
+- Health `status` is `ok` or `degraded` (HTTP stays 200); empty HA `github_pat` unsets inherited `GITHUB_PAT`; host binaries bind `127.0.0.1` unless `LISTEN_ADDR` / Docker / Supervisor
+- WebSocket Origin no longer trusts `X-Ingress-Path` alone; log lines and errors are token-redacted
+- UI: list poll no longer clears recreate errors; failed mutations refresh the list; Recreate / Recreate missing / Edit apply always offer a token field and show the API error
 
 ## 0.5.3
 

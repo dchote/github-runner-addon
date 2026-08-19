@@ -29,7 +29,7 @@ For every managed runner the control plane:
 | Action | Behavior |
 |--------|----------|
 | Create | `mkdir -p` host path → bind mount → configure `--work` → assert `.runner` `workFolder` matches |
-| Recreate / Save & apply | Stop container → if mismatch, clear `.runner` → configure-only (`DEBUG_ONLY` + token/PAT) then tokenless run → assert match; if no mismatch, restart with volume credentials only |
+| Recreate / Save & apply | Stop container → if mismatch, clear `.runner` → configure-only (`RUNNER_TOKEN` + no-op CMD, not `DEBUG_ONLY`) then tokenless run → assert match; if no mismatch, restart with volume credentials only |
 | Delete | Removes container + `*-data`; **never** deletes the host workdir tree; best-effort removes obsolete `*-work` volumes from older releases |
 
 Order matters: never clear `.runner` while the old container is still running.
@@ -43,7 +43,7 @@ API/UI expose:
 - `workdir_mismatch` — true when they differ (apply/reconfigure needed)
 - `workdir_error` — optional diagnostics error when `.runner` cannot be read
 
-**List vs Get:** `GET /runners` uses cached agent workdir (no helper containers per poll). `GET /runners/{id}` (and the UI details pane) performs a live `.runner` read. After create/recreate the manager asserts `workFolder` matches and returns an error if it does not (fail closed); a managed container may still remain for operator recovery.
+**List vs Get:** `GET /runners` uses cached agent workdir (no helper containers per poll). After a successful `ListManaged`, names not in that batch are `missing` without a per-runner inspect. `GET /runners/{id}` live-reads `.runner` via `CopyFromContainer` only while the container is **running** (missing/exited use cache; a missing file does not spawn alpine volume helpers). After create/recreate the manager asserts `workFolder` matches and returns an error if it does not (fail closed); a managed container may still remain for operator recovery.
 
 ## Operator checklist
 

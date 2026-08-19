@@ -36,6 +36,7 @@ func NewRouter(mgr *runner.Manager, dockerClient *docker.Client, feFS fs.FS) htt
 		api.Get("/openapi.yaml", openAPIHandler())
 		api.With(middleware.Timeout(60*time.Second)).Get("/runners", h.ListRunners)
 		api.With(middleware.Timeout(10*time.Minute)).Post("/runners", h.CreateRunner)
+		api.With(middleware.Timeout(15*time.Minute)).Post("/runners/recreate-missing", h.RecreateMissingRunners)
 		api.With(middleware.Timeout(60*time.Second)).Get("/runners/{id}", h.GetRunner)
 		// Patch may run full Recreate when apply=true — same budget as recreate.
 		api.With(middleware.Timeout(10*time.Minute)).Patch("/runners/{id}", h.PatchRunner)

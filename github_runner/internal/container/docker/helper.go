@@ -15,19 +15,29 @@ import (
 // Lightweight image for one-shot host/volume helpers.
 const helperImage = "alpine:3.20"
 
-func (c *Client) runHelper(ctx context.Context, mounts []mount.Mount, cmd []string) (string, int, error) {
-	if c.helperSem != nil {
-		if err := c.helperSem.Acquire(ctx, 1); err != nil {
-			return "", -1, err
-		}
-		defer c.helperSem.Release(1)
+func (c *Client) acquireHelper(ctx context.Context) (func(), error) {
+	if c == nil || c.helperSem == nil {
+		return func() {}, nil
 	}
+	if err := c.helperSem.Acquire(ctx, 1); err != nil {
+		return nil, err
+	}
+	return func() { c.helperSem.Release(1) }, nil
+}
+
+func (c *Client) runHelper(ctx context.Context, mounts []mount.Mount, cmd []string) (string, int, error) {
+	release, err := c.acquireHelper(ctx)
+	if err != nil {
+		return "", -1, err
+	}
+	defer release()
 	if err := c.EnsureImage(ctx, helperImage); err != nil {
 		return "", -1, fmt.Errorf("helper image: %w", err)
 	}
 	resp, err := c.cli.ContainerCreate(ctx, &container.Config{
-		Image: helperImage,
-		Cmd:   cmd,
+		Image:  helperImage,
+		Cmd:    cmd,
+		Labels: helperContainerLabels(),
 	}, &container.HostConfig{
 		Mounts: mounts,
 	}, nil, nil, "")

@@ -209,7 +209,7 @@ func TestBuildEnvWorkdirAndCache(t *testing.T) {
 			HostPath: "/scratch/build-cache/n",
 		},
 	}
-	env := strings.Join(m.buildEnv(rec, "", "", "/srv/gha-work/n", false), "\n")
+	env := strings.Join(m.buildEnv(rec, "", "", "/srv/gha-work/n"), "\n")
 	if !strings.Contains(env, "RUNNER_WORKDIR=/srv/gha-work/n") {
 		t.Fatal(env)
 	}

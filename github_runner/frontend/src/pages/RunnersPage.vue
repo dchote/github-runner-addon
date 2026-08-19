@@ -61,6 +61,17 @@
       <StandardCard title="Local runners" content-class="pa-0" :loading="loading">
         <template #titleAppend>
           <v-btn
+            v-if="counts.missing > 0"
+            color="white"
+            variant="outlined"
+            prepend-icon="mdi-restore"
+            :loading="actionLoading === 'recreate-missing'"
+            :disabled="!!actionLoading"
+            @click="openRecreateMissing"
+          >
+            Recreate missing
+          </v-btn>
+          <v-btn
             color="white"
             variant="outlined"
             prepend-icon="mdi-refresh"
@@ -226,19 +237,39 @@
 
     <StandardDialog v-model="recreateOpen" title="Recreate runner" max-width="480">
       <p class="text-body-medium brand-text-muted mb-4">
-        Rebuild the container from stored config. The registration volume is kept when present. If
-        the volume is missing, a registration token or configured PAT is required.
+        Rebuild the container from stored config. Registration files on the data volume are reused
+        when present. If the volume is missing or empty (no .runner), a registration token or
+        configured PAT is required.
       </p>
+      <v-alert
+        v-if="patConfigured"
+        class="mb-4"
+        type="info"
+        variant="tonal"
+        density="comfortable"
+      >
+        A PAT is configured — a token is minted when the volume cannot be reused. You can still
+        paste a registration token to override.
+      </v-alert>
       <v-text-field
-        v-if="!patConfigured"
         v-model="recreateToken"
-        label="Registration token (required if data volume is missing)"
+        :label="
+          patConfigured
+            ? 'Registration token (optional override)'
+            : 'Registration token (required if data volume is missing or empty)'
+        "
         type="password"
         autocomplete="off"
         :disabled="!!actionLoading"
       />
-      <v-alert v-else type="info" variant="tonal" density="comfortable">
-        A PAT is configured — a registration token will be minted when the volume cannot be reused.
+      <v-alert
+        v-if="recreateError"
+        class="mt-4"
+        type="error"
+        variant="tonal"
+        density="comfortable"
+      >
+        {{ recreateError }}
       </v-alert>
       <template #actions>
         <v-btn
@@ -258,6 +289,64 @@
           @click="confirmRecreate"
         >
           Recreate
+        </v-btn>
+      </template>
+    </StandardDialog>
+
+    <StandardDialog v-model="recreateMissingOpen" title="Recreate missing runners" max-width="480">
+      <p class="text-body-medium brand-text-muted mb-4">
+        Rebuild every runner whose container is missing from Docker using stored config.
+        Registration files on each data volume are reused when present. If a volume is
+        missing or empty, a registration token or configured PAT is required.
+      </p>
+      <v-alert
+        v-if="patConfigured"
+        class="mb-4"
+        type="info"
+        variant="tonal"
+        density="comfortable"
+      >
+        A PAT is configured — a token is minted when a volume cannot be reused. You can still
+        paste a registration token to override.
+      </v-alert>
+      <v-text-field
+        v-model="recreateMissingToken"
+        :label="
+          patConfigured
+            ? 'Registration token (optional override)'
+            : 'Registration token (required if data volumes are missing or empty)'
+        "
+        type="password"
+        autocomplete="off"
+        :disabled="!!actionLoading"
+      />
+      <v-alert
+        v-if="recreateMissingError"
+        class="mt-4"
+        type="error"
+        variant="tonal"
+        density="comfortable"
+      >
+        {{ recreateMissingError }}
+      </v-alert>
+      <template #actions>
+        <v-btn
+          color="primary"
+          variant="tonal"
+          :disabled="!!actionLoading"
+          @click="recreateMissingOpen = false"
+        >
+          Cancel
+        </v-btn>
+        <v-btn
+          color="primary"
+          variant="elevated"
+          prepend-icon="mdi-restore"
+          :loading="actionLoading === 'recreate-missing'"
+          :disabled="!!actionLoading && actionLoading !== 'recreate-missing'"
+          @click="confirmRecreateMissing"
+        >
+          Recreate missing
         </v-btn>
       </template>
     </StandardDialog>
@@ -297,9 +386,13 @@ const editOpen = ref(false)
 const deleteOpen = ref(false)
 const recreateOpen = ref(false)
 const recreateToken = ref('')
+const recreateError = ref('')
+const recreateMissingOpen = ref(false)
+const recreateMissingToken = ref('')
+const recreateMissingError = ref('')
 const logsOpen = ref(false)
 const logsRunnerId = ref('')
-/** @type {import('vue').Ref<null | 'start' | 'stop' | 'restart' | 'recreate' | 'delete'>} */
+/** @type {import('vue').Ref<null | 'start' | 'stop' | 'restart' | 'recreate' | 'delete' | 'recreate-missing'>} */
 const actionLoading = ref(null)
 const { selectedId, detailsOpen, isDesktop, select, clear } = useListDetailsPane()
 let pollTimer
@@ -377,11 +470,21 @@ function openDelete() {
 function openRecreate() {
   if (!selected.value || selectedBusy.value || actionLoading.value) return
   recreateToken.value = ''
+  recreateError.value = ''
   recreateOpen.value = true
+}
+
+function openRecreateMissing() {
+  if (actionLoading.value) return
+  recreateMissingToken.value = ''
+  recreateMissingError.value = ''
+  recreateMissingOpen.value = true
 }
 
 async function refreshSelected() {
   if (!selectedId.value) return
+  const row = runners.value.find((r) => r.id === selectedId.value)
+  if (row?.status === 'missing') return
   try {
     await store.dispatch('fetchRunner', selectedId.value)
   } catch {
@@ -417,6 +520,7 @@ async function confirmRecreate() {
   // Busy gating is UI-entry only; an already-open dialog may still confirm.
   if (!selected.value || actionLoading.value) return
   actionLoading.value = 'recreate'
+  recreateError.value = ''
   try {
     await store.dispatch('recreateRunner', {
       id: selected.value.id,
@@ -424,8 +528,32 @@ async function confirmRecreate() {
     })
     recreateOpen.value = false
     await refreshSelected()
-  } catch {
-    /* error surfaced via store */
+  } catch (e) {
+    recreateError.value = e.message || String(e)
+  } finally {
+    actionLoading.value = null
+  }
+}
+
+async function confirmRecreateMissing() {
+  if (actionLoading.value) return
+  actionLoading.value = 'recreate-missing'
+  recreateMissingError.value = ''
+  try {
+    const result = await store.dispatch('recreateMissingRunners', {
+      token: recreateMissingToken.value.trim() || undefined,
+    })
+    const failed = result?.failed || []
+    if (failed.length) {
+      recreateMissingError.value = failed
+        .map((f) => `${f.name || f.id}: ${f.error}`)
+        .join('\n')
+      return
+    }
+    recreateMissingOpen.value = false
+    await refreshSelected()
+  } catch (e) {
+    recreateMissingError.value = e.message || String(e)
   } finally {
     actionLoading.value = null
   }
