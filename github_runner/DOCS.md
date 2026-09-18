@@ -38,7 +38,7 @@ The manager creates missing workdir (and cache bind) host directories before sta
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `log_level` | `info` | Process log verbosity |
+| `log_level` | `info` | Process log verbosity. **info** records create / recreate / Recreate missing / start / stop / restart / delete (and image pulls). **debug** adds inspect, helpers, and job-status reads. |
 | `mount_docker_sock` | `true` | Mount host Docker socket into *runner* containers (root-equivalent; disable if unused) |
 | `runner_image` | `myoung34/github-runner:latest` | Docker image for new runners — default is [myoung34/github-runner](https://hub.docker.com/r/myoung34/github-runner); prefer a digest for pinning |
 | `github_pat` | _(empty)_ | Optional PAT to mint registration tokens and deregister on delete |
@@ -68,6 +68,7 @@ Same-path workdir bind (default `/srv/gha-work/<name>`) is still required for jo
 - Deleting a runner removes the local container and registration volume; host workdir and cache bind paths are never deleted. A shared cache volume is removed only when no other runner references it. With a PAT, delete also attempts GitHub deregistration.
 - Access is network-trust via Home Assistant ingress — do not expose the app on a public network without a reverse proxy you control.
 - Prefer pinning `runner_image` to a digest in production.
+- Extra environment rejects AWS **access keys / secrets / session tokens** (they would persist in `runners.json`). The manager does not disable IMDS and does not bind-mount `~/.aws`. Custom `:local` images must already exist on the host and should include tools your jobs need. See [0008](../docs/features/0008-no-host-aws-credentials.md).
 
 ## Credits
 

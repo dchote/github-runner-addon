@@ -106,6 +106,7 @@ If you use this addon, please also consider starring and supporting [myoung34/do
 | [API design](docs/patterns/api-design.md) | REST envelope, endpoints, WebSocket |
 | [0001 Fleet manager](docs/features/0001-runner-fleet-manager.md) | Create / lifecycle / logs contract |
 | [0002 Hardened fleet](docs/features/0002-hardened-persistent-fleet.md) | PAT, recreate, edit, security close-out |
+| [0008 Do not persist AWS access keys](docs/features/0008-no-host-aws-credentials.md) | Reject AWS access keys in extra_env; never bind-mount `~/.aws` |
 | [HA app DOCS](github_runner/DOCS.md) | In-Supervisor options, usage, and consuming-repo Actions secrets (`RUNNER_TOKEN`) |
 
 ## Layout

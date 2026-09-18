@@ -56,7 +56,7 @@ func TestIsLocalOnlyImage(t *testing.T) {
 		image string
 		want  bool
 	}{
-		{"8wi-os-runner:local", true},
+		{"ci-builder:local", true},
 		{"myoung34/github-runner:local", true},
 		{"myoung34/github-runner:latest", false},
 		{"localhost:5000/foo:latest", false},

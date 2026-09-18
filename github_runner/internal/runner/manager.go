@@ -68,6 +68,11 @@ var managedEnvKeys = map[string]struct{}{
 	"APP_INSTALLATION_ID":                 {},
 	"ACTIONS_RUNNER_HOOK_JOB_STARTED":     {},
 	"ACTIONS_RUNNER_HOOK_JOB_COMPLETED":   {},
+	// Do not persist cloud access keys in extra_env (runners.json / HA backups).
+	"AWS_ACCESS_KEY_ID":     {},
+	"AWS_SECRET_ACCESS_KEY": {},
+	"AWS_SESSION_TOKEN":     {},
+	"AWS_SECURITY_TOKEN":    {},
 }
 
 // configureSuccessMarkers indicate myoung34 config.sh finished.
@@ -247,6 +252,19 @@ func (m *Manager) requireDocker() error {
 		return ErrDockerUnavailable
 	}
 	return nil
+}
+
+// runnerLog returns a logger with stable operator-facing attrs for lifecycle ops.
+func runnerLog(rec store.Runner, op string) *slog.Logger {
+	if op == "" {
+		op = "runner"
+	}
+	return slog.With(
+		"op", op,
+		"runner", rec.Name,
+		"id", rec.ID,
+		"container", rec.ContainerName,
+	)
 }
 
 type CreateRequest struct {
@@ -668,8 +686,10 @@ func (m *Manager) resolveRegistrationToken(ctx context.Context, projectURL, toke
 	if !m.PATConfigured() {
 		return "", fmt.Errorf("%w: registration token is required when GITHUB_PAT is not configured", ErrValidation)
 	}
+	slog.Info("minting registration token", "url", projectURL)
 	minted, err := m.GitHub.MintRegistrationToken(ctx, projectURL)
 	if err != nil {
+		slog.Warn("mint registration token failed", "url", projectURL, "err", sanitizeErr(err))
 		return "", fmt.Errorf("%w: %v", ErrGitHub, sanitizeErr(err))
 	}
 	return minted, nil
@@ -771,14 +791,21 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 	if err := m.Store.Add(rec); err != nil {
 		return View{}, err
 	}
+	log := runnerLog(rec, "create")
+	log.Info("create: starting", "image", rec.Image, "url", rec.URL, "scope", rec.Scope)
 
 	// Detached lifecycle: client disconnect must not abort after the store row exists.
 	dctx, cancel := lifecycleContext()
 	defer cancel()
-	if err := m.startContainer(dctx, rec, token, info.OrgName()); err != nil {
+	if err := m.startContainer(dctx, rec, token, info.OrgName(), "create"); err != nil {
 		return m.rollbackFailedCreate(rec, err)
 	}
-	return m.Get(dctx, id)
+	view, err := m.Get(dctx, id)
+	if err != nil {
+		return view, err
+	}
+	log.Info("create: done", "status", view.Status)
+	return view, nil
 }
 
 // rollbackFailedCreate cleans up after a failed create. Uses a detached Docker
@@ -788,6 +815,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (View, error) {
 func (m *Manager) rollbackFailedCreate(rec store.Runner, createErr error) (View, error) {
 	dctx, cancel := docker.DetachedTimeout(detachedOpTimeout)
 	defer cancel()
+	log := runnerLog(rec, "create")
 
 	info, inspErr := m.inspectContainer(dctx, rec.ContainerName)
 	if inspErr != nil && !errors.Is(inspErr, errInspectUnavailable) {
@@ -805,6 +833,7 @@ func (m *Manager) rollbackFailedCreate(rec store.Runner, createErr error) (View,
 	}
 
 	if managed || hasRunner {
+		log.Info("create: rolling back", "keep_store", true, "has_runner", hasRunner, "managed", managed)
 		if m.Docker != nil && info.Exists {
 			if docker.EnvHasKey(info.Env, "RUNNER_TOKEN") {
 				if remErr := m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, 10); remErr != nil && !docker.IsNotFound(remErr) {
@@ -823,6 +852,7 @@ func (m *Manager) rollbackFailedCreate(rec store.Runner, createErr error) (View,
 		return View{}, createErr
 	}
 
+	log.Info("create: rolling back", "keep_store", false)
 	if m.PATConfigured() {
 		if derErr := m.GitHub.DeregisterRunner(dctx, rec.URL, rec.Name); derErr != nil {
 			slog.Warn("create rollback: github deregister failed", "runner", rec.Name, "err", derErr)
@@ -865,16 +895,19 @@ func (m *Manager) removeLegacyWorkVolume(ctx context.Context, rec store.Runner) 
 // long-running container so docker inspect never retains RUNNER_TOKEN and we
 // never kill a live GitHub session to scrub it. When token is empty, registration
 // files on the volume are reused.
-func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, orgName string) error {
+func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, orgName, op string) error {
+	log := runnerLog(rec, op)
 	if token != "" {
-		if err := m.configureThenRun(ctx, rec, token, orgName); err != nil {
+		if err := m.configureThenRun(ctx, rec, token, orgName, op); err != nil {
 			return err
 		}
 		return m.verifyAgentWorkdir(ctx, rec)
 	}
+	log.Info(op+": reusing volume credentials", "phase", "run")
 	if err := m.startContainerWithoutVerify(ctx, rec, "", orgName, false); err != nil {
 		return err
 	}
+	log.Info(op+": listener started", "phase", "run")
 	return m.verifyAgentWorkdir(ctx, rec)
 }
 
@@ -882,22 +915,29 @@ func (m *Manager) startContainer(ctx context.Context, rec store.Runner, token, o
 // then starts the listener without RUNNER_TOKEN. Avoids the old scrubToken stop/start
 // race that produced "A session for this runner already exists". DEBUG_ONLY is not
 // used: upstream skips config.sh when that flag is set and .runner is missing.
-func (m *Manager) configureThenRun(ctx context.Context, rec store.Runner, token, orgName string) error {
+func (m *Manager) configureThenRun(ctx context.Context, rec store.Runner, token, orgName, op string) error {
+	log := runnerLog(rec, op)
+	log.Info(op+": configuring", "phase", "configure")
 	if err := m.startContainerWithoutVerify(ctx, rec, token, orgName, true); err != nil {
 		return fmt.Errorf("configure runner: %w", err)
 	}
 	if err := m.waitForConfigure(ctx, rec); err != nil {
 		slog.Warn("configure failed", "runner", rec.Name, "id", rec.ID, "err", err)
 		dctx, cancel := docker.DetachedTimeout(detachedOpTimeout)
-		_ = m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, 10)
+		if remErr := m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, 10); remErr != nil && !docker.IsNotFound(remErr) {
+			log.Warn("remove failed configure container", "err", remErr)
+		}
 		cancel()
 		return err
 	}
+	log.Info(op+": configured", "phase", "configure")
 	dctx, cancel := docker.DetachedTimeout(detachedOpTimeout)
 	defer cancel()
 	if err := m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, 30); err != nil {
+		log.Warn("remove configure container failed", "err", err)
 		return fmt.Errorf("remove configure container: %w", err)
 	}
+	log.Info(op+": listening", "phase", "listen")
 	if err := m.startContainerWithoutVerify(ctx, rec, "", orgName, false); err != nil {
 		return fmt.Errorf("start runner: %w", err)
 	}
@@ -907,6 +947,7 @@ func (m *Manager) configureThenRun(ctx context.Context, rec store.Runner, token,
 	} else if !confirmed {
 		return fmt.Errorf("%w: timed out waiting for runner to listen", ErrValidation)
 	}
+	log.Info(op+": listen confirmed", "phase", "listen")
 	return nil
 }
 
@@ -1068,6 +1109,10 @@ func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string) []s
 		env = append(env, "REPO_URL="+rec.URL)
 	}
 	for k, v := range rec.ExtraEnv {
+		if _, blocked := managedEnvKeys[k]; blocked {
+			slog.Warn("skipping reserved extra_env key", "runner", rec.Name, "key", k)
+			continue
+		}
 		env = append(env, k+"="+v)
 	}
 	return env
@@ -1343,8 +1388,11 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 		return View{}, err
 	}
 	if req.Apply {
-		view, recErr := m.recreateRec(ctx, rec, RecreateRequest{Token: req.Token}, true)
+		log := runnerLog(rec, "apply")
+		log.Info("apply: starting", "image", rec.Image)
+		view, recErr := m.recreateRec(ctx, rec, RecreateRequest{Token: req.Token}, true, "apply")
 		if recErr != nil {
+			log.Warn("apply: failed", "err", recErr)
 			return View{}, recErr
 		}
 		if err := m.Store.Update(rec); err != nil {
@@ -1352,6 +1400,7 @@ func (m *Manager) Patch(ctx context.Context, id string, req PatchRequest) (View,
 			return view, fmt.Errorf("%w: container applied but failed to persist config: %v", ErrValidation, err)
 		}
 		m.cleanupStalePersistenceVolumes(ctx, before, rec)
+		log.Info("apply: done", "status", view.Status)
 		return m.Get(ctx, id)
 	}
 	if err := m.Store.Update(rec); err != nil {
@@ -1396,7 +1445,7 @@ func (m *Manager) Recreate(ctx context.Context, id string, req RecreateRequest) 
 	if err != nil {
 		return View{}, err
 	}
-	return m.recreateRec(ctx, rec, req, true)
+	return m.recreateRec(ctx, rec, req, true, "recreate")
 }
 
 func (m *Manager) RecreateMissing(ctx context.Context, req RecreateMissingRequest) (RecreateMissingResult, error) {
@@ -1412,10 +1461,12 @@ func (m *Manager) RecreateMissing(ctx context.Context, req RecreateMissingReques
 		return out, nil
 	}
 	if err := m.requireDocker(); err != nil {
+		slog.Warn("recreate-missing: docker unavailable", "op", "recreate-missing", "err", err)
 		return out, err
 	}
 	views, err := m.List(ctx)
 	if err != nil {
+		slog.Warn("recreate-missing: list failed", "op", "recreate-missing", "err", err)
 		return out, err
 	}
 	var missing []store.Runner
@@ -1430,11 +1481,15 @@ func (m *Manager) RecreateMissing(ctx context.Context, req RecreateMissingReques
 	if !m.createLimiter.Allow() {
 		return out, fmt.Errorf("%w: too many create/recreate requests", ErrRateLimited)
 	}
+	slog.Info("recreate-missing: starting", "op", "recreate-missing", "count", len(missing))
 	for _, rec := range missing {
+		log := runnerLog(rec, "recreate-missing")
+		log.Info("recreate-missing: runner")
 		unlock := m.lockRunner(rec.ID)
-		view, recErr := m.recreateRec(ctx, rec, RecreateRequest{Token: req.Token}, false)
+		view, recErr := m.recreateRec(ctx, rec, RecreateRequest{Token: req.Token}, false, "recreate")
 		unlock()
 		if recErr != nil {
+			log.Warn("recreate-missing: runner failed", "err", recErr)
 			out.Failed = append(out.Failed, RecreateMissingFailure{
 				ID:    rec.ID,
 				Name:  rec.Name,
@@ -1442,16 +1497,25 @@ func (m *Manager) RecreateMissing(ctx context.Context, req RecreateMissingReques
 			})
 			continue
 		}
+		log.Info("recreate-missing: runner done", "status", view.Status)
 		out.Recreated = append(out.Recreated, view.ID)
 	}
+	slog.Info("recreate-missing: done", "op", "recreate-missing", "recreated", len(out.Recreated), "failed", len(out.Failed))
 	return out, nil
 }
 
-func (m *Manager) recreateRec(ctx context.Context, rec store.Runner, req RecreateRequest, consumeQuota bool) (View, error) {
+func (m *Manager) recreateRec(ctx context.Context, rec store.Runner, req RecreateRequest, consumeQuota bool, op string) (View, error) {
+	if op == "" {
+		op = "recreate"
+	}
+	log := runnerLog(rec, op)
+	log.Info(op+": starting", "image", rec.Image)
 	if err := m.requireDocker(); err != nil {
+		log.Warn(op+": docker unavailable", "err", err)
 		return View{}, err
 	}
 	if err := m.errIfBusy(ctx, rec); err != nil {
+		log.Warn(op+": busy", "err", err)
 		return View{}, err
 	}
 	info, err := m.parseProject(rec.URL)
@@ -1473,6 +1537,7 @@ func (m *Manager) recreateRec(ctx context.Context, rec store.Runner, req Recreat
 	}
 	volExists, volErr := m.Docker.VolumeExists(dctx, rec.VolumeName)
 	if volErr != nil {
+		log.Warn(op+": inspect registration volume failed", "err", volErr)
 		return View{}, fmt.Errorf("inspect registration volume: %w", volErr)
 	}
 
@@ -1483,10 +1548,13 @@ func (m *Manager) recreateRec(ctx context.Context, rec store.Runner, req Recreat
 	}
 	plan, planErr := planWorkdirReconfigure(volExists, agentWF, agentErr, desiredWork)
 	if planErr != nil {
+		log.Warn(op+": workdir plan failed", "err", planErr)
 		return View{}, planErr
 	}
 	if plan.Needs {
-		slog.Info("recreate: workdir reconfigure required", "reason", plan.Reason, "desired", desiredWork, "agent", agentWF)
+		log.Info(op+": reconfigure required", "reason", plan.Reason, "desired", desiredWork, "agent", agentWF)
+	} else {
+		log.Info(op+": reusing volume credentials", "phase", "run")
 	}
 
 	token, resolveErr := m.resolveRecreateToken(dctx, rec.URL, req.Token, plan.Needs)
@@ -1504,31 +1572,42 @@ func (m *Manager) recreateRec(ctx context.Context, rec store.Runner, req Recreat
 	}
 
 	if containerInfo.Exists {
+		log.Info(op + ": removing old container")
 		if err := m.Docker.RemoveContainerTimeout(dctx, rec.ContainerName, StopTimeoutSecs); err != nil && !docker.IsNotFound(err) {
+			log.Warn(op+": remove container failed", "err", err)
 			return View{}, fmt.Errorf("remove container: %w", err)
 		}
 	}
 	cleared := false
 	if plan.Needs && volExists {
 		if err := m.backupRunnerConfig(dctx, rec.VolumeName); err != nil {
+			log.Warn(op+": backup .runner failed", "err", err)
 			return View{}, fmt.Errorf("backup .runner: %w", err)
 		}
 		if err := m.clearRunnerConfigForReconfigure(dctx, rec.VolumeName); err != nil {
+			log.Warn(op+": clear .runner failed", "err", err)
 			return View{}, fmt.Errorf("clear .runner for workdir reconfigure: %w", err)
 		}
 		cleared = true
 	}
 	m.removeLegacyWorkVolume(dctx, rec)
-	if err := m.startContainer(dctx, rec, token, info.OrgName()); err != nil {
+	if err := m.startContainer(dctx, rec, token, info.OrgName(), op); err != nil {
 		slog.Warn("recreate: start failed", "runner", rec.Name, "id", rec.ID, "err", err)
 		if cleared {
 			if restErr := m.restoreRunnerConfig(dctx, rec.VolumeName); restErr != nil {
 				slog.Error("recreate: restore .runner after start failure", "runner", rec.ID, "err", restErr)
+			} else {
+				log.Info(op + ": restored .runner after start failure")
 			}
 		}
 		return View{}, err
 	}
-	return m.Get(dctx, rec.ID)
+	view, err := m.Get(dctx, rec.ID)
+	if err != nil {
+		return view, err
+	}
+	log.Info(op+": done", "status", view.Status)
+	return view, nil
 }
 
 func (m *Manager) backupRunnerConfig(ctx context.Context, volumeName string) error {
@@ -1577,20 +1656,6 @@ func (m *Manager) resolveRecreateToken(ctx context.Context, projectURL, reqToken
 	return m.resolveRegistrationToken(ctx, projectURL, reqToken)
 }
 
-func (m *Manager) applyLifecycle(ctx context.Context, id string, op func(context.Context, string) error) (View, error) {
-	if err := m.requireDocker(); err != nil {
-		return View{}, err
-	}
-	r, err := m.Store.Get(id)
-	if err != nil {
-		return View{}, err
-	}
-	if err := op(ctx, r.ContainerName); err != nil {
-		return View{}, mapLifecycleDockerErr(err)
-	}
-	return m.Get(ctx, id)
-}
-
 func (m *Manager) Start(ctx context.Context, id string) (View, error) {
 	unlock := m.lockRunner(id)
 	defer unlock()
@@ -1601,10 +1666,18 @@ func (m *Manager) Start(ctx context.Context, id string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
+	log := runnerLog(r, "start")
+	log.Info("start: starting")
 	if err := m.ensureHooksThenStart(ctx, r); err != nil {
+		log.Warn("start: failed", "err", err)
 		return View{}, mapLifecycleDockerErr(err)
 	}
-	return m.Get(ctx, id)
+	view, err := m.Get(ctx, id)
+	if err != nil {
+		return view, err
+	}
+	log.Info("start: done", "status", view.Status)
+	return view, nil
 }
 
 func (m *Manager) Stop(ctx context.Context, id string) (View, error) {
@@ -1612,9 +1685,25 @@ func (m *Manager) Stop(ctx context.Context, id string) (View, error) {
 	defer unlock()
 	dctx, cancel := docker.DetachedTimeout(detachedLifecycleTimeout)
 	defer cancel()
-	return m.applyLifecycle(dctx, id, func(ctx context.Context, name string) error {
-		return m.Docker.Stop(ctx, name)
-	})
+	if err := m.requireDocker(); err != nil {
+		return View{}, err
+	}
+	r, err := m.Store.Get(id)
+	if err != nil {
+		return View{}, err
+	}
+	log := runnerLog(r, "stop")
+	log.Info("stop: starting")
+	if err := m.Docker.Stop(dctx, r.ContainerName); err != nil {
+		log.Warn("stop: failed", "err", err)
+		return View{}, mapLifecycleDockerErr(err)
+	}
+	view, err := m.Get(dctx, id)
+	if err != nil {
+		return view, err
+	}
+	log.Info("stop: done", "status", view.Status)
+	return view, nil
 }
 
 func (m *Manager) Restart(ctx context.Context, id string) (View, error) {
@@ -1627,12 +1716,20 @@ func (m *Manager) Restart(ctx context.Context, id string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
+	log := runnerLog(r, "restart")
+	log.Info("restart: starting")
 	dctx, cancel := docker.DetachedTimeout(detachedLifecycleTimeout)
 	defer cancel()
 	if err := m.ensureHooksThenRestart(dctx, r); err != nil {
+		log.Warn("restart: failed", "err", err)
 		return View{}, mapLifecycleDockerErr(err)
 	}
-	return m.Get(dctx, id)
+	view, err := m.Get(dctx, id)
+	if err != nil {
+		return view, err
+	}
+	log.Info("restart: done", "status", view.Status)
+	return view, nil
 }
 
 func (m *Manager) Delete(ctx context.Context, id string) error {
@@ -1642,7 +1739,10 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	log := runnerLog(r, "delete")
+	log.Info("delete: starting")
 	if err := m.errIfBusy(ctx, r); err != nil {
+		log.Warn("delete: busy", "err", err)
 		return err
 	}
 	if err := m.requireDocker(); err != nil {
@@ -1656,10 +1756,12 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 		}
 	}
 	if err := m.Docker.RemoveContainerTimeout(dctx, r.ContainerName, StopTimeoutSecs); err != nil && !docker.IsNotFound(err) {
+		log.Warn("delete: remove container failed", "err", err)
 		return err
 	}
 	if r.VolumeName != "" {
 		if err := m.Docker.RemoveVolume(dctx, r.VolumeName); err != nil && !docker.IsNotFound(err) {
+			log.Warn("delete: remove volume failed", "volume", r.VolumeName, "err", err)
 			return fmt.Errorf("remove registration volume: %w", err)
 		}
 	}
@@ -1680,7 +1782,12 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 			}
 		}
 	}
-	return m.Store.Delete(id)
+	if err := m.Store.Delete(id); err != nil {
+		log.Warn("delete: store remove failed", "err", err)
+		return err
+	}
+	log.Info("delete: done")
+	return nil
 }
 
 func (m *Manager) Logs(ctx context.Context, id string, follow bool, tail string) (io.ReadCloser, error) {

@@ -27,7 +27,7 @@ Enable long-running / incremental CI on managed runners: a durable cache mount (
 - Actions remote cache proxy (`ACTIONS_CACHE_*`)
 - Automatic cache pruning / size quotas
 - Resolving Home Assistant Supervisor `path_extern_share` into host binds
-- Project-specific toolchain env defaults beyond `RUNNER_CACHE` (use `extra_env`)
+- Project-specific toolchain env defaults beyond `RUNNER_CACHE` (use `extra_env`; AWS access keys are rejected — [0008](0008-no-host-aws-credentials.md))
 
 ## Persistence model
 

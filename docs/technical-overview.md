@@ -103,6 +103,8 @@ Classic PAT minimums: `repo` for repository runners; `admin:org` (or org runner 
 
 **Name collision:** container env `RUNNER_TOKEN` (registration, configure phase only) is not the same as a consuming repo’s Actions secret `RUNNER_TOKEN` (PAT used only to list runners for self-hosted-vs-hosted selection). See [DOCS — Consuming repositories](../github_runner/DOCS.md#consuming-repositories-actions-secrets).
 
+AWS access keys are not accepted in `extra_env`. The manager does not disable IMDS. See [0008](features/0008-no-host-aws-credentials.md).
+
 ## Credits
 
 See [README — Credits and attribution](../README.md#credits-and-attribution). Default runner image: **Matt Young / myoung34** — [docker-github-actions-runner](https://github.com/myoung34/docker-github-actions-runner).

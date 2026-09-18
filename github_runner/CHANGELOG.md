@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Do not persist AWS access keys** in `extra_env` (`AWS_ACCESS_KEY_ID` / secret / session token). Skip those keys if already stored. The manager does **not** disable IMDS and does not reserve `AWS_PROFILE` / `AWS_CONFIG_FILE`. See [0008](../docs/features/0008-no-host-aws-credentials.md).
+- Operator lifecycle logs at **info**: create/recreate/apply/start/stop/restart/delete and Recreate missing (phases plus done/fail). Image pulls and PAT token minting are logged; list/health polls stay quiet. Use `debug` for inspect/helpers.
+
 ## 0.6.0
 
 - **Reset-resilient recreate:** configure phase no longer uses `DEBUG_ONLY` (upstream skips `config.sh` when that flag is set and `.runner` is missing). Configure uses `RUNNER_TOKEN` + CMD `true` + `restart=no`, then a tokenless listener. Recreate works after a Docker wipe with a token/PAT — see [0007](../docs/features/0007-reset-resilient-recreate.md)

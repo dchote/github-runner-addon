@@ -139,6 +139,7 @@ func (c *Client) EnsureImage(ctx context.Context, image string) error {
 	if IsLocalOnlyImage(image) {
 		return fmt.Errorf("%w: %s not found locally (refusing to pull :local tag)", ErrImageNotFound, image)
 	}
+	slog.Info("pulling image", "image", image)
 	reader, err := c.cli.ImagePull(ctx, image, imagetypes.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("%w: pull %s: %w", ErrImagePull, image, err)

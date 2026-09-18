@@ -306,7 +306,10 @@ components:
           type: object
           additionalProperties:
             type: string
-          description: Extra container env; values must not contain newline, CR, or NUL
+          description: |
+            Extra container env; values must not contain newline, CR, or NUL.
+            AWS access key / secret / session token keys are reserved
+            (do not persist cloud secrets in extra_env).
         network_mode:
           type: string
           description: Empty, bridge, host, none, or container:<id>
@@ -338,7 +341,10 @@ components:
           type: object
           additionalProperties:
             type: string
-          description: Extra container env; values must not contain newline, CR, or NUL
+          description: |
+            Extra container env; values must not contain newline, CR, or NUL.
+            AWS access key / secret / session token keys are reserved
+            (do not persist cloud secrets in extra_env).
         network_mode:
           type: string
           description: Empty, bridge, host, none, or container:<id>
@@ -467,7 +473,10 @@ components:
           type: object
           additionalProperties:
             type: string
-          description: Extra container env; values must not contain newline, CR, or NUL
+          description: |
+            Extra container env; values must not contain newline, CR, or NUL.
+            AWS access key / secret / session token keys are reserved
+            (do not persist cloud secrets in extra_env).
         network_mode:
           type: string
           description: Empty, bridge, host, none, or container:<id>

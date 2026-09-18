@@ -35,7 +35,7 @@ Per-runner mounts (see [0003](../features/0003-persistent-runner-cache.md), [000
 | Cache (volume) | optional | Named volume | default `/cache` | Soft `warnings[]` — siblings cannot see named volumes |
 | Workdir | **always** | Host directory | default `/srv/gha-work/<normalized-name>` (same-path bind) | `RUNNER_WORKDIR` + agent `workFolder` must match; not a Docker volume `_data` path |
 
-Prefer **host bind** for builder hosts that need sibling Docker / Buildx local cache. Prefer **named volumes** on Home Assistant OS when sibling host binds are not required. Workdir and cache host binds use **Docker host** paths (not addon `/data` or `/share`).
+Prefer **host bind** for builder hosts that need sibling Docker / Buildx local cache. Prefer **named volumes** on Home Assistant OS when sibling host binds are not required. Workdir and cache host binds use **Docker host** paths (not addon `/data` or `/share`). The manager never bind-mounts host `~/.aws` or other credential files; see [0008](../features/0008-no-host-aws-credentials.md).
 
 Before bind-mount, the manager `mkdir -p`s missing host dirs via a one-shot helper that bind-mounts the path’s top-level directory (e.g. `/media` for `/media/usb0/ci-cache`) so any absolute Docker-host path works — SSD, USB, or other mounts — without an allowlist.
 

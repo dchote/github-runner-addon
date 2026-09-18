@@ -30,6 +30,51 @@ func TestValidateExtraEnv(t *testing.T) {
 	if err := validateExtraEnv(map[string]string{"FOO": "bar\x00"}); err == nil {
 		t.Fatal("expected NUL in value")
 	}
+	for _, k := range []string{
+		"AWS_ACCESS_KEY_ID",
+		"AWS_SECRET_ACCESS_KEY",
+		"AWS_SESSION_TOKEN",
+		"AWS_SECURITY_TOKEN",
+	} {
+		if err := validateExtraEnv(map[string]string{k: "x"}); err == nil {
+			t.Fatalf("expected reserved %s", k)
+		}
+	}
+	for _, k := range []string{"AWS_CONFIG_FILE", "AWS_PROFILE", "AWS_EC2_METADATA_DISABLED", "AWS_DEFAULT_REGION"} {
+		if err := validateExtraEnv(map[string]string{k: "x"}); err != nil {
+			t.Fatalf("expected allow %s: %v", k, err)
+		}
+	}
+}
+
+func TestBuildEnvSkipsStoredAwsAccessKeys(t *testing.T) {
+	m := &Manager{}
+	rec := store.Runner{
+		Name:   "n",
+		Scope:  "repo",
+		URL:    "https://github.com/a/b",
+		Labels: []string{"self-hosted"},
+		ExtraEnv: map[string]string{
+			"AWS_ACCESS_KEY_ID":         "AKIASHOULDNOTAPPLY",
+			"FOO":                       "ok",
+			"AWS_PROFILE":               "ci",
+			"AWS_EC2_METADATA_DISABLED": "true",
+		},
+	}
+	env := m.buildEnv(rec, "", "", "/srv/gha-work/n")
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "AKIASHOULDNOTAPPLY") {
+		t.Fatal("stored AWS access key extra_env must not be applied")
+	}
+	if !strings.Contains(joined, "FOO=ok") {
+		t.Fatal(joined)
+	}
+	if !strings.Contains(joined, "AWS_PROFILE=ci") {
+		t.Fatal(joined)
+	}
+	if !strings.Contains(joined, "AWS_EC2_METADATA_DISABLED=true") {
+		t.Fatal("jobs may set AWS_EC2_METADATA_DISABLED via extra_env")
+	}
 }
 
 func TestValidateNetworkMode(t *testing.T) {
@@ -257,12 +302,12 @@ func TestStartContainerImageNotFound(t *testing.T) {
 	m := &Manager{
 		workdirHost: fh,
 		createAndStartFn: func(_ context.Context, _ docker.CreateOpts) (string, error) {
-			return "", fmt.Errorf("%w: 8wi-os-runner:local not found locally", docker.ErrImageNotFound)
+			return "", fmt.Errorf("%w: ci-builder:local not found locally", docker.ErrImageNotFound)
 		},
 	}
 	rec := store.Runner{
 		Name: "os", Scope: "repo", URL: "https://github.com/a/b", Labels: []string{"self-hosted"},
-		ContainerName: "gha-runner-os", VolumeName: "vol", Image: "8wi-os-runner:local",
+		ContainerName: "gha-runner-os", VolumeName: "vol", Image: "ci-builder:local",
 	}
 	err := m.startContainerWithoutVerify(context.Background(), rec, "tok", "", true)
 	if err == nil || !errors.Is(err, ErrValidation) || !errors.Is(err, docker.ErrImageNotFound) {

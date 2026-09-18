@@ -43,6 +43,7 @@ It is aimed at home-lab and small-team operators who want persistent self-hosted
 - GitHub App JWT installation auth (classic/fine-grained PAT only).
 - Application-level API keys / RBAC (network trust: HA ingress or private network; do not expose the UI publicly).
 - Full host OS management.
+- Persisting cloud access keys in runner extra_env (rejected; they would land in backups — [0008](features/0008-no-host-aws-credentials.md)).
 - Job history / workflow correlation from the GitHub API (current job only, via local runner hooks — see [0005](features/0005-runner-job-state.md)).
 - Replacing or forking the upstream runner image — we orchestrate [`myoung34/github-runner`](https://github.com/myoung34/docker-github-actions-runner).
 

@@ -81,7 +81,7 @@
       :model-value="extraEnvText"
       class="mb-4"
       label="Extra environment (optional)"
-      hint="One KEY=value per line; reserved runner keys are rejected"
+      hint="One KEY=value per line; reserved runner keys and AWS access keys are rejected"
       persistent-hint
       variant="outlined"
       density="comfortable"
