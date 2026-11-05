@@ -287,6 +287,15 @@ func (m *Manager) ensureHooksThenStart(ctx context.Context, rec store.Runner) er
 	if m.Docker == nil {
 		return ErrDockerUnavailable
 	}
+	// A stopped runner stays on whatever image it was created from. Starting it
+	// rebuilds onto the current runner image when that image has moved.
+	rebuilt, err := m.rebuildRunnerForCurrentImage(ctx, rec, info, true)
+	if err != nil {
+		return err
+	}
+	if rebuilt {
+		return nil
+	}
 	if err := m.ensureJobHookScripts(ctx, workdir); err != nil {
 		slog.Debug("ensure job hooks before start", "runner", rec.ID, "err", err)
 	}
@@ -311,6 +320,13 @@ func (m *Manager) ensureHooksThenRestart(ctx context.Context, rec store.Runner) 
 	}
 	if m.Docker == nil {
 		return ErrDockerUnavailable
+	}
+	rebuilt, err := m.rebuildRunnerForCurrentImage(ctx, rec, info, true)
+	if err != nil {
+		return err
+	}
+	if rebuilt {
+		return nil
 	}
 	if err := m.ensureJobHookScripts(ctx, workdir); err != nil {
 		slog.Debug("ensure job hooks before restart", "runner", rec.ID, "err", err)

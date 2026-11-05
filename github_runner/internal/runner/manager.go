@@ -57,7 +57,7 @@ var managedEnvKeys = map[string]struct{}{
 	"CONFIGURED_ACTIONS_RUNNER_FILES_DIR": {},
 	"RUNNER_WORKDIR":                      {},
 	"RUNNER_CACHE":                        {},
-	"DISABLE_AUTO_UPDATE":                 {},
+	"DISABLE_AUTO_UPDATE":                 {}, // reserved; GitHub must be allowed to push runner updates
 	"DISABLE_AUTOMATIC_DEREGISTRATION":    {},
 	"DEBUG_ONLY":                          {},
 	"ORG_NAME":                            {},
@@ -145,6 +145,15 @@ type Manager struct {
 
 	// listenTimeout bounds waitForListening (0 = 90s). Tests may shorten it.
 	listenTimeout time.Duration
+
+	// Fleet image rebuild pulls the configured runner image and recreates containers
+	// still on a previous agent. See image_refresh.go.
+	refreshMu        sync.Mutex
+	refreshRunning   bool
+	imageRefreshBusy bool
+	pulledImageIDs   map[string]string
+	imagePulledAt    map[string]time.Time
+	warnedAutoUpdate map[string]struct{}
 }
 
 // errInspectUnavailable is returned when neither Docker nor inspectFn can inspect.
@@ -299,6 +308,10 @@ type PatchRequest struct {
 
 type RecreateRequest struct {
 	Token string `json:"token"`
+	// ForceReconfigure re-runs config.sh even when the workdir matches, so a
+	// runner registered with --disableupdate can be switched back to auto-update.
+	// Not accepted from the HTTP API.
+	ForceReconfigure bool `json:"-"`
 }
 
 type RecreateMissingRequest struct {
@@ -1087,7 +1100,9 @@ func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string) []s
 		"RUNNER_SCOPE=" + rec.Scope,
 		"CONFIGURED_ACTIONS_RUNNER_FILES_DIR=" + configFilesDir,
 		"RUNNER_WORKDIR=" + workdir,
-		"DISABLE_AUTO_UPDATE=true",
+		// Do not set DISABLE_AUTO_UPDATE. GitHub stops delivering jobs to runner
+		// versions that miss the update window, and a deprecated agent cannot
+		// receive the refresh message that would have updated it.
 		"DISABLE_AUTOMATIC_DEREGISTRATION=true",
 		"ACTIONS_RUNNER_HOOK_JOB_STARTED=" + jobStartedHookPath(workdir),
 		"ACTIONS_RUNNER_HOOK_JOB_COMPLETED=" + jobCompletedHookPath(workdir),
@@ -1514,7 +1529,18 @@ func (m *Manager) recreateRec(ctx context.Context, rec store.Runner, req Recreat
 		log.Warn(op+": docker unavailable", "err", err)
 		return View{}, err
 	}
-	if err := m.errIfBusy(ctx, rec); err != nil {
+	if op == "image-refresh" {
+		busy, berr := m.runnerJobBusy(ctx, rec)
+		if berr != nil {
+			log.Warn(op+": job state", "err", berr)
+			return View{}, berr
+		}
+		if busy {
+			err := fmt.Errorf("%w: refuse image refresh while a job is running", ErrRunnerBusy)
+			log.Warn(op+": busy", "err", err)
+			return View{}, err
+		}
+	} else if err := m.errIfBusy(ctx, rec); err != nil {
 		log.Warn(op+": busy", "err", err)
 		return View{}, err
 	}
@@ -1550,6 +1576,17 @@ func (m *Manager) recreateRec(ctx context.Context, rec store.Runner, req Recreat
 	if planErr != nil {
 		log.Warn(op+": workdir plan failed", "err", planErr)
 		return View{}, planErr
+	}
+	if req.ForceReconfigure && !plan.Needs {
+		plan = workdirReconfigurePlan{Needs: true, Reason: "runner auto-update disabled"}
+	}
+	// An operator-supplied token can turn auto-update back on. A blank token must
+	// not reconfigure: workdir-matched Recreate keeps the existing registration.
+	if !plan.Needs && strings.TrimSpace(req.Token) != "" && volExists {
+		raw, readErr := m.readRunnerConfig(dctx, rec.VolumeName)
+		if readErr == nil && runnerAutoUpdateDisabled(raw) {
+			plan = workdirReconfigurePlan{Needs: true, Reason: "runner auto-update disabled"}
+		}
 	}
 	if plan.Needs {
 		log.Info(op+": reconfigure required", "reason", plan.Reason, "desired", desiredWork, "agent", agentWF)
@@ -1860,12 +1897,15 @@ func (m *Manager) Reconcile(ctx context.Context) {
 }
 
 // StartReconcileLoop runs Reconcile immediately and on an interval until ctx is done.
+// The same loop rebuilds running runners onto the configured runner image when a
+// newer build has been published (see maybeRefreshRunnerImages).
 func (m *Manager) StartReconcileLoop(ctx context.Context, every time.Duration) {
 	m.Reconcile(ctx)
 	if every <= 0 {
 		every = 2 * time.Minute
 	}
 	go func() {
+		m.maybeRefreshRunnerImages(ctx)
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
@@ -1874,6 +1914,7 @@ func (m *Manager) StartReconcileLoop(ctx context.Context, every time.Duration) {
 				return
 			case <-t.C:
 				m.Reconcile(ctx)
+				m.maybeRefreshRunnerImages(ctx)
 			}
 		}
 	}()

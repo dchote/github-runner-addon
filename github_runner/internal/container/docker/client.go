@@ -47,6 +47,10 @@ var ErrImageNotFound = errors.New("image not found")
 // ErrImagePull is returned when a registry pull fails (network, auth, or stream error).
 var ErrImagePull = errors.New("image pull failed")
 
+// ErrUsingLocalImage is returned when a refresh pull failed but a local image
+// is already present. Callers may continue with that image and retry the pull later.
+var ErrUsingLocalImage = errors.New("using local image after pull failure")
+
 // Client wraps the Docker Engine API.
 type Client struct {
 	cli *client.Client
@@ -139,6 +143,39 @@ func (c *Client) EnsureImage(ctx context.Context, image string) error {
 	if IsLocalOnlyImage(image) {
 		return fmt.Errorf("%w: %s not found locally (refusing to pull :local tag)", ErrImageNotFound, image)
 	}
+	if err := c.pullImage(ctx, image); err != nil {
+		return err
+	}
+	_, _, err = c.cli.ImageInspectWithRaw(ctx, image)
+	if err != nil {
+		return fmt.Errorf("%w: %s not available after pull", ErrImageNotFound, image)
+	}
+	return nil
+}
+
+// EnsureImageCurrent pulls image even when a copy is already local, so a floating
+// tag such as :latest cannot keep a deprecated Actions runner. :local tags are
+// never pulled. A failed pull with a local image present returns ErrUsingLocalImage.
+func (c *Client) EnsureImageCurrent(ctx context.Context, image string) error {
+	if IsLocalOnlyImage(image) {
+		return c.EnsureImage(ctx, image)
+	}
+	_, _, inspectErr := c.cli.ImageInspectWithRaw(ctx, image)
+	localExists := inspectErr == nil
+	if err := c.pullImage(ctx, image); err != nil {
+		if localExists {
+			slog.Warn("image pull failed; using local image", "image", image, "err", err)
+			return fmt.Errorf("%w: %s: %w", ErrUsingLocalImage, image, err)
+		}
+		return err
+	}
+	if _, _, err := c.cli.ImageInspectWithRaw(ctx, image); err != nil {
+		return fmt.Errorf("%w: %s not available after pull", ErrImageNotFound, image)
+	}
+	return nil
+}
+
+func (c *Client) pullImage(ctx context.Context, image string) error {
 	slog.Info("pulling image", "image", image)
 	reader, err := c.cli.ImagePull(ctx, image, imagetypes.PullOptions{})
 	if err != nil {
@@ -148,11 +185,16 @@ func (c *Client) EnsureImage(ctx context.Context, image string) error {
 	if err := consumeImagePull(reader); err != nil {
 		return fmt.Errorf("%w: pull %s: %w", ErrImagePull, image, err)
 	}
-	_, _, err = c.cli.ImageInspectWithRaw(ctx, image)
-	if err != nil {
-		return fmt.Errorf("%w: %s not available after pull", ErrImageNotFound, image)
-	}
 	return nil
+}
+
+// LocalImageID returns the engine image ID for a ref that is already present locally.
+func (c *Client) LocalImageID(ctx context.Context, image string) (string, error) {
+	inspect, _, err := c.cli.ImageInspectWithRaw(ctx, image)
+	if err != nil {
+		return "", err
+	}
+	return inspect.ID, nil
 }
 
 // consumeImagePull reads a Docker image-pull JSON stream and returns a pull error
@@ -224,7 +266,7 @@ func EnvHasKey(env []string, key string) bool {
 }
 
 func (c *Client) CreateAndStart(ctx context.Context, opts CreateOpts) (string, error) {
-	if err := c.EnsureImage(ctx, opts.Image); err != nil {
+	if err := c.EnsureImageCurrent(ctx, opts.Image); err != nil && !errors.Is(err, ErrUsingLocalImage) {
 		return "", err
 	}
 	if opts.VolumeName != "" {
@@ -397,6 +439,7 @@ type InspectInfo struct {
 	Status  string // Docker raw status
 	Running bool
 	Exists  bool
+	ImageID string // image ID the container was created from (sha256:…)
 	Env     []string
 	Labels  map[string]string
 }
@@ -442,6 +485,7 @@ func (c *Client) inspectByNameUncached(ctx context.Context, name string) (Inspec
 	info.ID = cj.ID
 	info.Status = cj.State.Status
 	info.Running = cj.State.Running
+	info.ImageID = cj.Image
 	if cj.Config != nil {
 		info.Env = append([]string{}, cj.Config.Env...)
 		if len(cj.Config.Labels) > 0 {
