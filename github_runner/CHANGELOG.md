@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - **Rebuild the fleet onto the current runner image.** GitHub rejects deprecated agents (`Runner version vX.Y.Z is deprecated and cannot receive messages`). About every 12 hours, and again on addon start, running runners that use `myoung34/github-runner` (any tag, including an old pin) are recreated onto the configured image (`runner_image`, default `:latest`). A runner in a job waits until the job finishes. Stopped runners stay stopped and are rebuilt when you start them. With `GITHUB_PAT`, a runner registered with auto-update disabled is reconfigured so later updates can arrive. Custom and `:local` images are left unchanged.
+- Runners are no longer registered with auto-update disabled. A deprecated agent cannot receive the update that would replace it.
+
+## 0.6.1
+
 - **Do not persist AWS access keys** in `extra_env` (`AWS_ACCESS_KEY_ID` / secret / session token). Skip those keys if already stored. The manager does **not** disable IMDS and does not reserve `AWS_PROFILE` / `AWS_CONFIG_FILE`. See [0008](../docs/features/0008-no-host-aws-credentials.md).
 - Operator lifecycle logs at **info**: create/recreate/apply/start/stop/restart/delete and Recreate missing (phases plus done/fail). Image pulls and PAT token minting are logged; list/health polls stay quiet. Use `debug` for inspect/helpers.
 

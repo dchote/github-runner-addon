@@ -9,7 +9,7 @@ import (
 const (
 	DefaultHTTPPort = "8099"
 	DefaultDataDir  = "./data"
-	DefaultVersion  = "0.6.1"
+	DefaultVersion  = "0.7.0"
 )
 
 // Config holds process configuration.
