@@ -14,6 +14,8 @@ if [[ -f "${OPTIONS_FILE}" ]]; then
   LOG_LEVEL="$(jq -r '.log_level // "info"' "${OPTIONS_FILE}")"
   export RUNNER_IMAGE
   RUNNER_IMAGE="$(jq -r '.runner_image // "myoung34/github-runner:latest"' "${OPTIONS_FILE}")"
+  export RUNNER_IMAGE_REFRESH_DAYS
+  RUNNER_IMAGE_REFRESH_DAYS="$(jq -r '.runner_image_refresh_days // 7' "${OPTIONS_FILE}")"
   if jq -e '.mount_docker_sock == true' "${OPTIONS_FILE}" >/dev/null 2>&1; then
     export MOUNT_DOCKER_SOCK=true
   else
@@ -29,6 +31,7 @@ if [[ -f "${OPTIONS_FILE}" ]]; then
 else
   export LOG_LEVEL="${LOG_LEVEL:-info}"
   export RUNNER_IMAGE="${RUNNER_IMAGE:-myoung34/github-runner:latest}"
+  export RUNNER_IMAGE_REFRESH_DAYS="${RUNNER_IMAGE_REFRESH_DAYS:-7}"
   export MOUNT_DOCKER_SOCK="${MOUNT_DOCKER_SOCK:-false}"
 fi
 

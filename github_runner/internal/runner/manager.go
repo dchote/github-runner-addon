@@ -148,12 +148,15 @@ type Manager struct {
 
 	// Fleet image rebuild pulls the configured runner image and recreates containers
 	// still on a previous agent. See image_refresh.go.
-	refreshMu        sync.Mutex
-	refreshRunning   bool
-	imageRefreshBusy bool
-	pulledImageIDs   map[string]string
-	imagePulledAt    map[string]time.Time
-	warnedAutoUpdate map[string]struct{}
+	refreshMu           sync.Mutex
+	refreshRunning      bool
+	imageRefreshBusy    bool
+	imageRefreshEvery   time.Duration
+	imageRefreshLoaded  bool
+	imageRefreshChecked map[string]time.Time
+	pulledImageIDs      map[string]string
+	imagePulledAt       map[string]time.Time
+	warnedAutoUpdate    map[string]struct{}
 }
 
 // errInspectUnavailable is returned when neither Docker nor inspectFn can inspect.
@@ -202,15 +205,43 @@ func NewManager(st *store.Store, d *docker.Client, gh *github.Client, image stri
 		image = DefaultRunnerImage
 	}
 	return &Manager{
-		Store:           st,
-		Docker:          d,
-		GitHub:          gh,
-		Image:           image,
-		MountDockerSock: mountSock,
-		Version:         version,
-		createLimiter:   newRateLimiter(10, time.Minute),
-		agentWF:         make(map[string]agentWorkFolderCache),
+		Store:             st,
+		Docker:            d,
+		GitHub:            gh,
+		Image:             image,
+		MountDockerSock:   mountSock,
+		Version:           version,
+		createLimiter:     newRateLimiter(10, time.Minute),
+		agentWF:           make(map[string]agentWorkFolderCache),
+		imageRefreshEvery: DefaultImageRefreshInterval,
 	}
+}
+
+// SetImageRefreshInterval sets how often running runners are checked and rebuilt
+// onto the configured image. Zero disables the automatic check. Negative values
+// use the default (one week).
+func (m *Manager) SetImageRefreshInterval(d time.Duration) {
+	if m == nil {
+		return
+	}
+	if d < 0 {
+		d = DefaultImageRefreshInterval
+	}
+	m.refreshMu.Lock()
+	m.imageRefreshEvery = d
+	m.refreshMu.Unlock()
+}
+
+// ImageRefreshDays reports the configured check interval in days. Zero means off.
+func (m *Manager) ImageRefreshDays() int {
+	if m == nil || m.imageRefreshEvery <= 0 {
+		return 0
+	}
+	days := int(m.imageRefreshEvery / (24 * time.Hour))
+	if days < 1 {
+		return 1
+	}
+	return days
 }
 
 // SetDockerFactory allows reconnecting when the engine was unavailable at boot.
@@ -1897,8 +1928,8 @@ func (m *Manager) Reconcile(ctx context.Context) {
 }
 
 // StartReconcileLoop runs Reconcile immediately and on an interval until ctx is done.
-// The same loop rebuilds running runners onto the configured runner image when a
-// newer build has been published (see maybeRefreshRunnerImages).
+// The same loop checks the configured runner image on imageRefreshEvery (default
+// one week, persisted across restarts) and rebuilds running runners when it moved.
 func (m *Manager) StartReconcileLoop(ctx context.Context, every time.Duration) {
 	m.Reconcile(ctx)
 	if every <= 0 {

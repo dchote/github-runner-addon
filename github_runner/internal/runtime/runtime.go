@@ -3,7 +3,9 @@ package runtime
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -14,15 +16,16 @@ const (
 
 // Config holds process configuration.
 type Config struct {
-	DataDir         string
-	HTTPPort        string
-	ListenAddr      string
-	FrontendEmbed   bool
-	LogLevel        string
-	RunnerImage     string
-	MountDockerSock bool
-	GitHubPAT       string
-	AppVersion      string
+	DataDir              string
+	HTTPPort             string
+	ListenAddr           string
+	FrontendEmbed        bool
+	LogLevel             string
+	RunnerImage          string
+	MountDockerSock      bool
+	GitHubPAT            string
+	AppVersion           string
+	ImageRefreshInterval time.Duration
 }
 
 // LoadFromEnv builds Config from environment and defaults.
@@ -41,10 +44,31 @@ func LoadFromEnv() Config {
 		LogLevel:      envOr("LOG_LEVEL", "info"),
 		RunnerImage:   envOr("RUNNER_IMAGE", "myoung34/github-runner:latest"), // keep in sync with runner.DefaultRunnerImage
 		// Opt-in: mounting the host Docker socket into runners is powerful and risky.
-		MountDockerSock: envOr("MOUNT_DOCKER_SOCK", "false") == "true",
-		GitHubPAT:       strings.TrimSpace(os.Getenv("GITHUB_PAT")),
-		AppVersion:      envOr("APP_VERSION", DefaultVersion),
+		MountDockerSock:      envOr("MOUNT_DOCKER_SOCK", "false") == "true",
+		GitHubPAT:            strings.TrimSpace(os.Getenv("GITHUB_PAT")),
+		AppVersion:           envOr("APP_VERSION", DefaultVersion),
+		ImageRefreshInterval: ParseImageRefreshDays(os.Getenv("RUNNER_IMAGE_REFRESH_DAYS")),
 	}
+}
+
+// ParseImageRefreshDays reads the addon option in days. Empty or invalid values
+// use 7 (one week). Zero disables automatic image checks. Values above 365 are capped.
+func ParseImageRefreshDays(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 7 * 24 * time.Hour
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 7 * 24 * time.Hour
+	}
+	if n == 0 {
+		return 0
+	}
+	if n > 365 {
+		n = 365
+	}
+	return time.Duration(n) * 24 * time.Hour
 }
 
 func (c Config) Addr() string {

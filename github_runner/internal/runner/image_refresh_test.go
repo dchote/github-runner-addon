@@ -2,9 +2,14 @@ package runner
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dchote/github-runner-addon/internal/container/docker"
 	"github.com/dchote/github-runner-addon/internal/store"
 )
 
@@ -128,4 +133,73 @@ func TestBuildEnvLeavesAutoUpdateEnabled(t *testing.T) {
 	if !strings.Contains(joined, "DISABLE_AUTOMATIC_DEREGISTRATION=true") {
 		t.Fatal(joined)
 	}
+}
+
+func TestImageRefreshSchedule(t *testing.T) {
+	dir := t.TempDir()
+	st := store.New(filepath.Join(dir, "runners.json"))
+	m := NewManager(st, nil, nil, "", false, "t")
+	if m.ImageRefreshDays() != 7 {
+		t.Fatalf("default days %d", m.ImageRefreshDays())
+	}
+	target, _ := refreshImageRef(m.Image, "")
+	m.refreshMu.Lock()
+	m.imageRefreshCheckedAtLocked(target, time.Now())
+	if m.imageRefreshDueLocked(target) {
+		m.refreshMu.Unlock()
+		t.Fatal("a check from this week is not due")
+	}
+	m.refreshMu.Unlock()
+
+	m2 := NewManager(st, nil, nil, "", false, "t")
+	m2.SetImageRefreshInterval(24 * time.Hour)
+	m2.refreshMu.Lock()
+	m2.loadImageRefreshStateLocked()
+	if m2.imageRefreshDueLocked(target) {
+		m2.refreshMu.Unlock()
+		t.Fatal("saved check should survive a restart")
+	}
+	m2.imageRefreshChecked[target] = time.Now().Add(-48 * time.Hour)
+	if !m2.imageRefreshDueLocked(target) {
+		m2.refreshMu.Unlock()
+		t.Fatal("a check older than the interval is due")
+	}
+	m2.refreshMu.Unlock()
+
+	m2.SetImageRefreshInterval(0)
+	if m2.ImageRefreshDays() != 0 {
+		t.Fatalf("disabled days %d", m2.ImageRefreshDays())
+	}
+	m2.refreshMu.Lock()
+	if m2.imageRefreshDueLocked(target) {
+		m2.refreshMu.Unlock()
+		t.Fatal("disabled interval is never due")
+	}
+	m2.refreshMu.Unlock()
+}
+
+func TestImageRefreshDoesNotRecordCheckWhenInspectFails(t *testing.T) {
+	dir := t.TempDir()
+	st := store.New(filepath.Join(dir, "runners.json"))
+	if err := st.Add(store.Runner{
+		ID: "id1", Name: "one", URL: "https://github.com/a/b", Scope: "repo",
+		ContainerName: "gha-one", Image: DefaultRunnerImage,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(st, nil, nil, "", false, "t")
+	m.inspectFn = func(context.Context, string) (docker.InspectInfo, error) {
+		return docker.InspectInfo{}, errors.New("daemon down")
+	}
+	target, _ := refreshImageRef(m.Image, "")
+	busy, failed, incomplete := m.refreshRunnerImages(context.Background())
+	if busy || failed || !incomplete {
+		t.Fatalf("busy=%v failed=%v incomplete=%v", busy, failed, incomplete)
+	}
+	m.refreshMu.Lock()
+	if !m.imageRefreshDueLocked(target) {
+		m.refreshMu.Unlock()
+		t.Fatal("a failed inspect must not consume the weekly check")
+	}
+	m.refreshMu.Unlock()
 }

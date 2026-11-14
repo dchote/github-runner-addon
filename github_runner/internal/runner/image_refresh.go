@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,11 +17,12 @@ import (
 )
 
 const (
-	// runnerImageRefreshInterval is how often the fleet is rebuilt onto the
-	// configured runner image. GitHub drops jobs for runner versions that miss
-	// the update window (about two months). Recreating when that image's ID
-	// changes lands a new agent well inside the window.
-	runnerImageRefreshInterval = 12 * time.Hour
+	// DefaultImageRefreshInterval is how often the fleet is checked and rebuilt
+	// onto the configured runner image. Upstream tags such as :latest move more
+	// often than the Actions agent itself; a week keeps runners current without
+	// recreating them on every base-image push. Addon option
+	// runner_image_refresh_days overrides this. Zero disables the check.
+	DefaultImageRefreshInterval = 7 * 24 * time.Hour
 	// runnerImageRefreshRetry is the backoff after a registry pull fails.
 	runnerImageRefreshRetry = 15 * time.Minute
 )
@@ -202,11 +205,13 @@ func (m *Manager) runnerJobBusy(ctx context.Context, rec store.Runner) (bool, er
 }
 
 // maybeRefreshRunnerImages rebuilds running runners onto the configured image
-// when a newer build is available. Busy runners are retried on the next
-// reconcile tick. A failed pull is retried after runnerImageRefreshRetry.
-// Stopped runners are left stopped; Start rebuilds them before they run.
+// when a newer build is available. The check runs at most once per configured
+// interval (default one week) and that timestamp is kept across addon restarts.
+// Busy runners are retried on the next reconcile tick without pulling again.
+// A failed pull is retried after runnerImageRefreshRetry. Stopped runners are
+// left stopped; Start and Restart do not pull a new image.
 func (m *Manager) maybeRefreshRunnerImages(ctx context.Context) {
-	if m == nil || m.Store == nil {
+	if m == nil || m.Store == nil || m.imageRefreshEvery <= 0 {
 		return
 	}
 	target, _ := refreshImageRef(m.Image, "")
@@ -219,6 +224,7 @@ func (m *Manager) maybeRefreshRunnerImages(ctx context.Context) {
 		m.refreshMu.Unlock()
 		return
 	}
+	m.loadImageRefreshStateLocked()
 	if !m.imageRefreshDueLocked(target) {
 		m.refreshMu.Unlock()
 		return
@@ -232,52 +238,51 @@ func (m *Manager) maybeRefreshRunnerImages(ctx context.Context) {
 		m.refreshMu.Unlock()
 	}()
 
-	busyLeft, pullFailed := m.refreshRunnerImages(ctx)
+	busyLeft, pullFailed, incomplete := m.refreshRunnerImages(ctx)
 	m.refreshMu.Lock()
 	m.imageRefreshBusy = busyLeft
 	if pullFailed {
-		if m.imagePulledAt == nil {
-			m.imagePulledAt = map[string]time.Time{}
-		}
-		// ensureImageID may already have recorded a backoff. Don't stretch a
-		// success timestamp backward. Only fill a missing stamp.
-		if _, ok := m.imagePulledAt[target]; !ok {
-			m.imagePulledAt[target] = time.Now().Add(-runnerImageRefreshInterval + runnerImageRefreshRetry)
-		}
+		m.imageRefreshCheckedAtLocked(target, time.Now().Add(-m.imageRefreshEvery+runnerImageRefreshRetry))
+	} else if !busyLeft && !incomplete {
+		m.imageRefreshCheckedAtLocked(target, time.Now())
 	}
 	m.refreshMu.Unlock()
 }
 
 func (m *Manager) imageRefreshDueLocked(target string) bool {
+	if m.imageRefreshEvery <= 0 {
+		return false
+	}
 	if m.imageRefreshBusy {
 		return true
 	}
 	if docker.IsLocalOnlyImage(target) {
 		return false
 	}
-	at, ok := m.imagePulledAt[target]
+	at, ok := m.imageRefreshChecked[target]
 	if !ok {
 		return true
 	}
-	return time.Since(at) >= runnerImageRefreshInterval
+	return time.Since(at) >= m.imageRefreshEvery
 }
 
-func (m *Manager) refreshRunnerImages(ctx context.Context) (busyLeft bool, pullFailed bool) {
+func (m *Manager) refreshRunnerImages(ctx context.Context) (busyLeft bool, pullFailed bool, incomplete bool) {
 	runners, err := m.Store.List()
 	if err != nil {
 		slog.Warn("image-refresh: list store", "err", err)
-		return false, true
+		return false, true, false
 	}
 	target, _ := refreshImageRef(m.Image, "")
 	slog.Info("image-refresh: checking fleet", "image", target, "runners", len(runners))
 	var rebuilt int
 	for _, rec := range runners {
 		if ctx.Err() != nil {
-			return busyLeft, true
+			return busyLeft, true, true
 		}
 		info, err := m.inspectContainer(ctx, rec.ContainerName)
 		if err != nil {
 			slog.Warn("image-refresh: inspect", "runner", rec.Name, "id", rec.ID, "err", err)
+			incomplete = true
 			continue
 		}
 		if !info.Exists {
@@ -302,7 +307,7 @@ func (m *Manager) refreshRunnerImages(ctx context.Context) (busyLeft bool, pullF
 		}
 	}
 	slog.Info("image-refresh: fleet check done", "image", target, "rebuilt", rebuilt, "waiting", busyLeft)
-	return busyLeft, pullFailed
+	return busyLeft, pullFailed, incomplete
 }
 
 // rebuildRunnerForCurrentImage recreates rec onto the current runner image when
@@ -429,7 +434,7 @@ func (m *Manager) ensureImageID(ctx context.Context, ref string) (string, error)
 	m.refreshMu.Lock()
 	if m.pulledImageIDs != nil && m.imagePulledAt != nil {
 		if id := m.pulledImageIDs[ref]; looksLikeImageID(normalizeImageID(id)) {
-			if at, ok := m.imagePulledAt[ref]; ok && time.Since(at) < runnerImageRefreshInterval {
+			if at, ok := m.imagePulledAt[ref]; ok && time.Since(at) < m.imageRefreshEvery {
 				m.refreshMu.Unlock()
 				return id, nil
 			}
@@ -440,12 +445,12 @@ func (m *Manager) ensureImageID(ctx context.Context, ref string) (string, error)
 	err := m.Docker.EnsureImageCurrent(ctx, ref)
 	hard := err != nil && !errors.Is(err, docker.ErrUsingLocalImage)
 	if hard {
-		m.noteImagePull(ref, time.Now().Add(-runnerImageRefreshInterval+runnerImageRefreshRetry), "")
+		m.noteImagePull(ref, time.Now().Add(-m.imageRefreshEvery+runnerImageRefreshRetry), "")
 		return "", err
 	}
 	id, idErr := m.Docker.LocalImageID(ctx, ref)
 	if idErr != nil || !looksLikeImageID(normalizeImageID(id)) {
-		m.noteImagePull(ref, time.Now().Add(-runnerImageRefreshInterval+runnerImageRefreshRetry), "")
+		m.noteImagePull(ref, time.Now().Add(-m.imageRefreshEvery+runnerImageRefreshRetry), "")
 		if idErr != nil {
 			return "", idErr
 		}
@@ -453,7 +458,7 @@ func (m *Manager) ensureImageID(ctx context.Context, ref string) (string, error)
 	}
 	pulledAt := time.Now()
 	if errors.Is(err, docker.ErrUsingLocalImage) {
-		pulledAt = time.Now().Add(-runnerImageRefreshInterval + runnerImageRefreshRetry)
+		pulledAt = time.Now().Add(-m.imageRefreshEvery + runnerImageRefreshRetry)
 	}
 	m.noteImagePull(ref, pulledAt, id)
 	return id, nil
@@ -471,5 +476,65 @@ func (m *Manager) noteImagePull(ref string, at time.Time, id string) {
 			m.pulledImageIDs = map[string]string{}
 		}
 		m.pulledImageIDs[ref] = id
+	}
+}
+
+func (m *Manager) imageRefreshStatePath() string {
+	if m == nil || m.Store == nil || m.Store.Path() == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(m.Store.Path()), "image-refresh.json")
+}
+
+// loadImageRefreshStateLocked reads the last completed check. The caller holds refreshMu.
+func (m *Manager) loadImageRefreshStateLocked() {
+	if m.imageRefreshLoaded {
+		return
+	}
+	m.imageRefreshLoaded = true
+	path := m.imageRefreshStatePath()
+	if path == "" {
+		return
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var disk struct {
+		Checked map[string]time.Time `json:"checked"`
+	}
+	if json.Unmarshal(b, &disk) != nil || len(disk.Checked) == 0 {
+		return
+	}
+	m.imageRefreshChecked = disk.Checked
+}
+
+// imageRefreshCheckedAtLocked records when target was last checked. The caller holds refreshMu.
+func (m *Manager) imageRefreshCheckedAtLocked(ref string, at time.Time) {
+	if m.imageRefreshChecked == nil {
+		m.imageRefreshChecked = map[string]time.Time{}
+	}
+	m.imageRefreshChecked[ref] = at
+	m.saveImageRefreshStateLocked()
+}
+
+func (m *Manager) saveImageRefreshStateLocked() {
+	path := m.imageRefreshStatePath()
+	if path == "" || len(m.imageRefreshChecked) == 0 {
+		return
+	}
+	b, err := json.Marshal(struct {
+		Checked map[string]time.Time `json:"checked"`
+	}{Checked: m.imageRefreshChecked})
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		slog.Warn("image-refresh: save state", "err", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		slog.Warn("image-refresh: save state", "err", err)
 	}
 }

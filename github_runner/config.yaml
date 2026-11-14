@@ -18,11 +18,14 @@ options:
   log_level: info
   mount_docker_sock: true
   runner_image: myoung34/github-runner:latest
+  # Days between pulling runner_image and rebuilding running containers. 0 disables.
+  runner_image_refresh_days: 7
   github_pat: ""
 schema:
   log_level: list(debug|info|warn|error)
   mount_docker_sock: bool
   runner_image: str
+  runner_image_refresh_days: int
   github_pat: password
 
 # Pre-built multi-arch image on GHCR (preferred for end users).

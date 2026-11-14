@@ -145,6 +145,7 @@ Optional environment:
 |----------|---------|
 | `GITHUB_PAT` | Mint registration tokens + deregister on delete |
 | `RUNNER_IMAGE` | Runner image (default `myoung34/github-runner:latest`) |
+| `RUNNER_IMAGE_REFRESH_DAYS` | How often to pull that image and rebuild running runners (default `7`; `0` disables) |
 | `MOUNT_DOCKER_SOCK` | Mount host Docker socket into *runner* containers |
 | `LOG_LEVEL` | `debug` / `info` / `warn` / `error` |
 

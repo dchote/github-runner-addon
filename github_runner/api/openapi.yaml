@@ -585,6 +585,9 @@ components:
               type: boolean
             runner_image:
               type: string
+            runner_image_refresh_days:
+              type: integer
+              description: How often running runners are checked and rebuilt onto runner_image, in days. 0 disables the automatic check.
             mount_docker_sock:
               type: boolean
             runners:

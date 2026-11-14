@@ -41,6 +41,7 @@ The manager creates missing workdir (and cache bind) host directories before sta
 | `log_level` | `info` | Process log verbosity. **info** records create / recreate / Recreate missing / start / stop / restart / delete (and image pulls). **debug** adds inspect, helpers, and job-status reads. |
 | `mount_docker_sock` | `true` | Mount host Docker socket into *runner* containers (root-equivalent; disable if unused) |
 | `runner_image` | `myoung34/github-runner:latest` | Docker image for new runners — default is [myoung34/github-runner](https://hub.docker.com/r/myoung34/github-runner); prefer a digest for pinning |
+| `runner_image_refresh_days` | `7` | How often to pull `runner_image` and rebuild **running** runners onto it. `0` turns the check off. Restart the app after changing it. A failed pull retries in 15 minutes; a runner that is in a job waits until the job finishes |
 | `github_pat` | _(empty)_ | Optional PAT to mint registration tokens and deregister on delete |
 
 ### PAT scopes

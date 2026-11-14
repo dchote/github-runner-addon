@@ -43,6 +43,9 @@ func TestHealthHandler(t *testing.T) {
 	if env.Data["status"] != "degraded" {
 		t.Fatalf("docker unavailable should be degraded, status=%v", env.Data["status"])
 	}
+	if env.Data["runner_image_refresh_days"] != float64(7) {
+		t.Fatalf("refresh days %v", env.Data["runner_image_refresh_days"])
+	}
 }
 
 func TestCreateValidation(t *testing.T) {

@@ -60,6 +60,12 @@ func main() {
 	}
 
 	mgr := runner.NewManager(st, dockerClient, gh, cfg.RunnerImage, cfg.MountDockerSock, cfg.AppVersion)
+	mgr.SetImageRefreshInterval(cfg.ImageRefreshInterval)
+	if days := mgr.ImageRefreshDays(); days == 0 {
+		slog.Info("runner image refresh disabled")
+	} else {
+		slog.Info("runner image refresh", "days", days)
+	}
 	mgr.SetDockerFactory(docker.New)
 
 	ctx, cancel := context.WithCancel(context.Background())

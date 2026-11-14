@@ -48,6 +48,21 @@
         by Matt Young. This app orchestrates those containers.
       </p>
 
+      <div class="settings-row mb-1">
+        <div class="text-body-small brand-text-muted mb-1">Image update check</div>
+        <div class="text-body-large">{{ refreshLabel }}</div>
+      </div>
+      <p class="text-body-small brand-text-muted mb-3">
+        <template v-if="refreshDays > 0">
+          Running runners are checked and rebuilt onto that image at most this often. Change
+          <code class="settings-code">runner_image_refresh_days</code> in addon options.
+        </template>
+        <template v-else>
+          Automatic checks are off. Recreate a runner to pull a newer image. Set
+          <code class="settings-code">runner_image_refresh_days</code> in addon options to turn them back on.
+        </template>
+      </p>
+
       <v-divider class="mb-3" />
 
       <div class="settings-row mb-1">
@@ -124,6 +139,13 @@ const store = useStore()
 const mobile = useMobile()
 const version = computed(() => store.state.appVersion)
 const runnerImage = computed(() => store.state.runnerImage)
+const refreshDays = computed(() => store.state.runnerImageRefreshDays)
+const refreshLabel = computed(() => {
+  const days = refreshDays.value
+  if (!days) return 'Off'
+  if (days === 1) return 'Every day'
+  return `Every ${days} days`
+})
 const patConfigured = computed(() => store.state.githubPatConfigured)
 const mountDockerSock = computed(() => store.state.mountDockerSock)
 

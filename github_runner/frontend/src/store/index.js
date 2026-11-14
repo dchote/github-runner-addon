@@ -26,6 +26,7 @@ export default createStore({
     dockerError: null,
     githubPatConfigured: false,
     runnerImage: '',
+    runnerImageRefreshDays: 7,
     mountDockerSock: false,
     appVersion: '',
     orphans: [],
@@ -48,6 +49,9 @@ export default createStore({
       state.dockerError = health?.docker?.error || null
       state.githubPatConfigured = !!health?.github_pat_configured
       state.runnerImage = health?.runner_image || ''
+      state.runnerImageRefreshDays = Number.isFinite(health?.runner_image_refresh_days)
+        ? health.runner_image_refresh_days
+        : 7
       state.mountDockerSock = !!health?.mount_docker_sock
       state.appVersion = health?.version || ''
       state.orphans = health?.orphans || []

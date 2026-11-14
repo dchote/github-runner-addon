@@ -12,6 +12,7 @@ services:
       MOUNT_DOCKER_SOCK: "true"
       LOG_LEVEL: info
       RUNNER_IMAGE: myoung34/github-runner:latest
+      RUNNER_IMAGE_REFRESH_DAYS: "7"
     volumes:
       - ./data:/data
       - /var/run/docker.sock:/var/run/docker.sock

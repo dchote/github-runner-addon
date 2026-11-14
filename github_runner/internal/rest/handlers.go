@@ -66,12 +66,14 @@ func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 	patConfigured := false
 	mountSock := false
 	image := ""
+	refreshDays := 0
 	orphans := []runner.OrphanView{}
 	if h.Manager != nil {
 		version = h.Manager.Version
 		patConfigured = h.Manager.PATConfigured()
 		mountSock = h.Manager.MountDockerSock
 		image = h.Manager.Image
+		refreshDays = h.Manager.ImageRefreshDays()
 		orphans = h.Manager.Orphans()
 	}
 
@@ -92,11 +94,12 @@ func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 			"readable": storeOK,
 			"error":    storeErr,
 		},
-		"runners":               counts,
-		"github_pat_configured": patConfigured,
-		"runner_image":          image,
-		"mount_docker_sock":     mountSock,
-		"orphans":               orphans,
+		"runners":                   counts,
+		"github_pat_configured":     patConfigured,
+		"runner_image":              image,
+		"runner_image_refresh_days": refreshDays,
+		"mount_docker_sock":         mountSock,
+		"orphans":                   orphans,
 	})
 }
 

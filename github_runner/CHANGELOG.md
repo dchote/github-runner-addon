@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Check the runner image once a week.** `runner_image_refresh_days` (default `7`, `0` disables) controls how often running runners are pulled and rebuilt. The last check is saved, so restarting the addon does not start another rebuild. Start and Restart no longer pull a new image.
+
 ## 0.7.0
 
 - **Rebuild the fleet onto the current runner image.** GitHub rejects deprecated agents (`Runner version vX.Y.Z is deprecated and cannot receive messages`). About every 12 hours, and again on addon start, running runners that use `myoung34/github-runner` (any tag, including an old pin) are recreated onto the configured image (`runner_image`, default `:latest`). A runner in a job waits until the job finishes. Stopped runners stay stopped and are rebuilt when you start them. With `GITHUB_PAT`, a runner registered with auto-update disabled is reconfigured so later updates can arrive. Custom and `:local` images are left unchanged.
