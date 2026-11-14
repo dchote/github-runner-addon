@@ -88,6 +88,8 @@ func normalizeCache(c *store.CacheConfig) *store.CacheConfig {
 	out.Type = cacheType(&out)
 	out.VolumeName = strings.TrimSpace(out.VolumeName)
 	out.HostPath = strings.TrimSpace(out.HostPath)
+	out.BuildkitHostPath = strings.TrimSpace(out.BuildkitHostPath)
+	out.BuildkitColdHostPath = strings.TrimSpace(out.BuildkitColdHostPath)
 	if out.Type == "bind" {
 		out.VolumeName = ""
 		// Same-path rule: bind mounts always use host_path as the container target.
@@ -115,9 +117,41 @@ func resolveCacheEffective(c *store.CacheConfig) string {
 	return path.Clean(cacheTarget(c))
 }
 
+// resolveBuildkitRoot is a Docker-host path, not a path in a named runner volume.
+// Each persistent builder keeps its own database below this shared host root.
+func resolveBuildkitRoot(c *store.CacheConfig) string {
+	if c == nil || !c.Enabled {
+		return ""
+	}
+	if c.BuildkitHostPath != "" {
+		return path.Clean(c.BuildkitHostPath)
+	}
+	if cacheType(c) != "bind" {
+		return ""
+	}
+	return path.Join(resolveCacheEffective(c), "buildkit-state")
+}
+
+func resolveBuildkitColdRoot(c *store.CacheConfig) string {
+	if c == nil || !c.Enabled || c.BuildkitColdHostPath == "" {
+		return ""
+	}
+	return path.Clean(c.BuildkitColdHostPath)
+}
+
 func validateCache(c *store.CacheConfig) error {
 	if c == nil || !c.Enabled {
 		return nil
+	}
+	for _, p := range []string{c.BuildkitHostPath, c.BuildkitColdHostPath} {
+		if p != "" {
+			if strings.ContainsAny(p, ",\n\r") {
+				return fmt.Errorf("%w: invalid BuildKit storage path", ErrValidation)
+			}
+			if err := validateHostBindPath(p, "cache.buildkit_host_path"); err != nil {
+				return err
+			}
+		}
 	}
 	typ := cacheType(c)
 	if typ != "volume" && typ != "bind" {
@@ -198,6 +232,20 @@ func buildExtraMounts(rec store.Runner, workdirBind string) []mount.Mount {
 				Target:   cacheTarget(rec.Cache),
 				ReadOnly: rec.Cache.ReadOnly,
 			})
+		}
+	}
+	for _, root := range []string{resolveBuildkitRoot(rec.Cache), resolveBuildkitColdRoot(rec.Cache)} {
+		if root == "" {
+			continue
+		}
+		covered := false
+		for _, m := range mounts {
+			if m.Type == mount.TypeBind && m.Source == m.Target && (root == m.Source || strings.HasPrefix(root, m.Source+"/")) {
+				covered = true
+			}
+		}
+		if !covered {
+			mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: root, Target: root})
 		}
 	}
 	if hp := strings.TrimSpace(workdirBind); hp != "" {

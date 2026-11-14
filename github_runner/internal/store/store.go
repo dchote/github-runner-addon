@@ -20,6 +20,9 @@ const SchemaVersion = 4
 // For type=bind, HostPath is same-path mounted and Target is normalized to HostPath.
 // RUNNER_CACHE is injected from the effective path (see resolveCacheEffective).
 type CacheConfig struct {
+	BuildkitHostPath     string `json:"buildkit_host_path,omitempty"`      // optional separate SSD state root
+	BuildkitColdHostPath string `json:"buildkit_cold_host_path,omitempty"` // optional merge/renderer state root
+
 	Enabled    bool   `json:"enabled"`
 	Type       string `json:"type,omitempty"`        // volume | bind; API default volume when enabled (UI defaults to bind)
 	VolumeName string `json:"volume_name,omitempty"` // named volume; empty → gha-runner-<name>-cache

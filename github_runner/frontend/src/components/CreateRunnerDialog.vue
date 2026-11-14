@@ -86,6 +86,8 @@
               v-model:cache-type="cacheType"
               v-model:cache-volume-name="cacheVolumeName"
               v-model:cache-host-path="cacheHostPath"
+        v-model:buildkit-host-path="buildkitHostPath"
+        v-model:buildkit-cold-host-path="buildkitColdHostPath"
               v-model:cache-target="cacheTarget"
               v-model:cache-read-only="cacheReadOnly"
               v-model:workdir-host-path="workdirHostPath"
@@ -139,6 +141,8 @@ const cacheEnabled = ref(false)
 const cacheType = ref('bind')
 const cacheVolumeName = ref('')
 const cacheHostPath = ref('')
+const buildkitHostPath = ref('')
+const buildkitColdHostPath = ref('')
 const cacheTarget = ref('/cache')
 const cacheReadOnly = ref(false)
 const workdirHostPath = ref('')
@@ -166,6 +170,8 @@ watch(open, (v) => {
     cacheType.value = 'bind'
     cacheVolumeName.value = ''
     cacheHostPath.value = ''
+    buildkitHostPath.value = ''
+    buildkitColdHostPath.value = ''
     cacheTarget.value = '/cache'
     cacheReadOnly.value = false
     workdirHostPath.value = ''
@@ -201,6 +207,8 @@ async function submit() {
       cacheType: cacheType.value,
       cacheVolumeName: cacheVolumeName.value,
       cacheHostPath: cacheHostPath.value,
+      buildkitHostPath: buildkitHostPath.value,
+      buildkitColdHostPath: buildkitColdHostPath.value,
       cacheTarget: cacheTarget.value,
       cacheReadOnly: cacheReadOnly.value,
       workdirHostPath: workdirHostPath.value,

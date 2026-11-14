@@ -106,6 +106,17 @@ describe('runnerConfig', () => {
     })
   })
 
+  it('round-trips independent BuildKit storage tiers', () => {
+    const config = cacheFromRunner({cache: {enabled: true, type: 'bind',
+      host_path: '/scratch/cache', buildkit_host_path: '/scratch/buildkit-state',
+      buildkit_cold_host_path: '/build-storage/buildkit-state'}})
+    const payload = buildRuntimePayload({cacheEnabled: true, cacheType: 'bind',
+      cacheHostPath: config.hostPath, buildkitHostPath: config.buildkitHostPath,
+      buildkitColdHostPath: config.buildkitColdHostPath})
+    expect(payload.cache.buildkit_host_path).toBe('/scratch/buildkit-state')
+    expect(payload.cache.buildkit_cold_host_path).toBe('/build-storage/buildkit-state')
+  })
+
   it('reads cache from runner record', () => {
     expect(cacheFromRunner({}).enabled).toBe(false)
     expect(cacheFromRunner({}).type).toBe('bind')

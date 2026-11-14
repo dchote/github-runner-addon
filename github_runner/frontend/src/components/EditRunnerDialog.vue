@@ -39,6 +39,8 @@
         v-model:cache-type="cacheType"
         v-model:cache-volume-name="cacheVolumeName"
         v-model:cache-host-path="cacheHostPath"
+        v-model:buildkit-host-path="buildkitHostPath"
+        v-model:buildkit-cold-host-path="buildkitColdHostPath"
         v-model:cache-target="cacheTarget"
         v-model:cache-read-only="cacheReadOnly"
         v-model:workdir-host-path="workdirHostPath"
@@ -134,6 +136,8 @@ const cacheEnabled = ref(false)
 const cacheType = ref('bind')
 const cacheVolumeName = ref('')
 const cacheHostPath = ref('')
+const buildkitHostPath = ref('')
+const buildkitColdHostPath = ref('')
 const cacheTarget = ref('/cache')
 const cacheReadOnly = ref(false)
 const workdirHostPath = ref('')
@@ -162,6 +166,8 @@ watch(open, (v) => {
   cacheType.value = cache.type
   cacheVolumeName.value = cache.volumeName
   cacheHostPath.value = cache.hostPath
+  buildkitHostPath.value = cache.buildkitHostPath
+  buildkitColdHostPath.value = cache.buildkitColdHostPath
   cacheTarget.value = cache.target
   cacheReadOnly.value = cache.readOnly
   workdirHostPath.value = props.runner.workdir_host_path || ''
@@ -199,6 +205,8 @@ async function submit(forceApply) {
       cacheType: cacheType.value,
       cacheVolumeName: cacheVolumeName.value,
       cacheHostPath: cacheHostPath.value,
+      buildkitHostPath: buildkitHostPath.value,
+      buildkitColdHostPath: buildkitColdHostPath.value,
       cacheTarget: cacheTarget.value,
       cacheReadOnly: cacheReadOnly.value,
       workdirHostPath: workdirHostPath.value,

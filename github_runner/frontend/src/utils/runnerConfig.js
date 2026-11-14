@@ -83,6 +83,8 @@ export function cacheFromRunner(runner) {
       type: 'bind',
       volumeName: '',
       hostPath: '',
+      buildkitHostPath: '',
+      buildkitColdHostPath: '',
       target: '/cache',
       readOnly: false,
     }
@@ -99,6 +101,8 @@ export function cacheFromRunner(runner) {
     type,
     volumeName: type === 'volume' ? c.volume_name || '' : '',
     hostPath,
+    buildkitHostPath: c.buildkit_host_path || '',
+    buildkitColdHostPath: c.buildkit_cold_host_path || '',
     target,
     readOnly: !!c.read_only,
   }
@@ -136,6 +140,8 @@ export function buildRuntimePayload({
   cacheType = 'bind',
   cacheVolumeName = '',
   cacheHostPath = '',
+  buildkitHostPath = '',
+  buildkitColdHostPath = '',
   cacheTarget = '/cache',
   cacheReadOnly = false,
   workdirHostPath = '',
@@ -173,6 +179,8 @@ export function buildRuntimePayload({
       const vn = String(cacheVolumeName || '').trim()
       if (vn) cache.volume_name = vn
     }
+    if (cleanCachePath(buildkitHostPath)) cache.buildkit_host_path = cleanCachePath(buildkitHostPath)
+    if (cleanCachePath(buildkitColdHostPath)) cache.buildkit_cold_host_path = cleanCachePath(buildkitColdHostPath)
     payload.cache = cache
   } else {
     payload.cache = { enabled: false }

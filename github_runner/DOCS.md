@@ -79,3 +79,29 @@ Runner containers use **[myoung34/docker-github-actions-runner](https://github.c
 
 - **Default:** Supervisor pulls `ghcr.io/dchote/github-runner-addon` (see `image` in `config.yaml`).
 - **Local build:** Comment out `image:`, then **Rebuild** so Supervisor builds this directory’s `Dockerfile`.
+
+### BuildKit state on the cache disk
+
+For host-bind caches, Runner Manager supplies `RUNNER_BUILDKIT_ROOT=$RUNNER_CACHE/buildkit-state` and exposes `buildkit_root` in runner API responses. Shared `setup-ecr-buildx` actions create each builder's standard Docker volume as a local-driver bind to a separate directory beneath this root. Thus BuildKit snapshots, package cache mounts, and metadata live on the selected cache disk. Named-volume runner caches do not supply this host path.
+
+Recreate idle runners after upgrading to receive the environment variable. Existing runners using a verified same-path `RUNNER_CACHE` bind are also supported by the shared action. Existing default BuildKit volumes require a maintenance migration; the action fails rather than replacing their cached state. Runner removal/recreation does not delete builder state. Multiple BuildKit daemons must not share a state directory.
+
+The shared cache resolver no longer exports an additional Buildx `type=local` layer cache. Old exports are left intact; this change does not delete or import them. Host language/package caches remain available. Supervisor's own Docker-engine builds use separate storage and are not redirected by Runner Manager.
+
+For tiered storage, `cache.buildkit_host_path` selects the active SSD state root;
+`cache.buildkit_cold_host_path` selects an optional bulk root for builder names
+ending in `-merge` or `-renderer`. Both are editable in runner configuration.
+The manager creates and same-path mounts explicit roots and supplies
+`RUNNER_BUILDKIT_ROOT` / `RUNNER_BUILDKIT_COLD_ROOT`. Empty active paths retain the
+cache-host default; empty bulk paths use the shared action's host policy or the
+active root. Changes require recreating an idle runner and do not move existing
+state automatically.
+
+Existing runners can use the Docker host's `/etc/8wi/buildkit-storage.json`:
+`{"version":1,"active_root":"/scratch/buildkit-state","bulk_root":"/build-storage/buildkit-state"}`.
+Per-runner environment values take precedence. Each builder keeps a separate
+database; concurrent daemons never share a directory. A host migration can retain
+volume objects by using persistent bind mounts underneath their mountpoints;
+the shared action verifies the volume and configured directory have identical
+device/inode identity before starting the builder. Keep those mounts ordered
+before Docker at boot. Application images/containerd storage are separate.

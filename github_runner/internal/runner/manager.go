@@ -57,6 +57,8 @@ var managedEnvKeys = map[string]struct{}{
 	"CONFIGURED_ACTIONS_RUNNER_FILES_DIR": {},
 	"RUNNER_WORKDIR":                      {},
 	"RUNNER_CACHE":                        {},
+	"RUNNER_BUILDKIT_ROOT":                {},
+	"RUNNER_BUILDKIT_COLD_ROOT":           {},
 	"DISABLE_AUTO_UPDATE":                 {}, // reserved; GitHub must be allowed to push runner updates
 	"DISABLE_AUTOMATIC_DEREGISTRATION":    {},
 	"DEBUG_ONLY":                          {},
@@ -370,8 +372,10 @@ type View struct {
 	WorkdirAgent     string      `json:"workdir_agent,omitempty"`     // workFolder from /runner/data/.runner
 	WorkdirMismatch  bool        `json:"workdir_mismatch,omitempty"`  // agent workFolder ≠ effective path
 	WorkdirError     string      `json:"workdir_error,omitempty"`     // diagnostics error reading .runner
-	CacheEffective   string      `json:"cache_effective,omitempty"`   // resolved cache path (RUNNER_CACHE)
-	Warnings         []string    `json:"warnings,omitempty"`          // soft config advisories (do not fail the request)
+	BuildkitColdRoot string      `json:"buildkit_cold_root,omitempty"`
+	BuildkitRoot     string      `json:"buildkit_root,omitempty"`   // persistent builder state on the Docker host
+	CacheEffective   string      `json:"cache_effective,omitempty"` // resolved cache path (RUNNER_CACHE)
+	Warnings         []string    `json:"warnings,omitempty"`        // soft config advisories (do not fail the request)
 }
 
 func (m *Manager) PATConfigured() bool {
@@ -406,6 +410,8 @@ func (m *Manager) enrichWithManaged(ctx context.Context, r store.Runner, mc *doc
 		Status:           "unknown",
 		WorkdirEffective: resolveWorkdirHostPath(r),
 		CacheEffective:   resolveCacheEffective(r.Cache),
+		BuildkitRoot:     resolveBuildkitRoot(r.Cache),
+		BuildkitColdRoot: resolveBuildkitColdRoot(r.Cache),
 	}
 	if warns := cacheSiblingWarnings(r.Cache); len(warns) > 0 {
 		v.Warnings = append(v.Warnings, warns...)
@@ -1013,6 +1019,13 @@ func (m *Manager) ensurePersistenceHostDirs(ctx context.Context, rec store.Runne
 			}
 		}
 	}
+	for _, root := range []string{resolveBuildkitRoot(rec.Cache), resolveBuildkitColdRoot(rec.Cache)} {
+		if root != "" {
+			if err := wh.EnsureHostDir(ctx, root); err != nil {
+				return fmt.Errorf("ensure BuildKit state root: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -1140,6 +1153,12 @@ func (m *Manager) buildEnv(rec store.Runner, token, orgName, workdir string) []s
 	}
 	if cachePath := resolveCacheEffective(rec.Cache); cachePath != "" && cachePath != "." {
 		env = append(env, "RUNNER_CACHE="+cachePath)
+	}
+	if root := resolveBuildkitRoot(rec.Cache); root != "" {
+		env = append(env, "RUNNER_BUILDKIT_ROOT="+root)
+	}
+	if root := resolveBuildkitColdRoot(rec.Cache); root != "" {
+		env = append(env, "RUNNER_BUILDKIT_COLD_ROOT="+root)
 	}
 	if token != "" {
 		env = append(env, "RUNNER_TOKEN="+token)

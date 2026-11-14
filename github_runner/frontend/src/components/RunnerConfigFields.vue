@@ -176,6 +176,20 @@
         :disabled="disabled"
         @update:model-value="$emit('update:cacheTarget', $event)"
       />
+      <v-text-field
+        :model-value="buildkitHostPath"
+        label="BuildKit active state path (optional)"
+        hint="Docker-host SSD path, e.g. /scratch/buildkit-state. Empty uses the cache host path/buildkit-state. Recreate idle runners to apply."
+        persistent-hint variant="outlined" density="comfortable" class="mb-4"
+        :disabled="disabled" @update:model-value="$emit('update:buildkitHostPath', $event)"
+      />
+      <v-text-field
+        :model-value="buildkitColdHostPath"
+        label="BuildKit bulk state path (optional)"
+        hint="Docker-host capacity storage for merge/renderer builders, e.g. /build-storage/buildkit-state. Existing state needs a maintenance migration."
+        persistent-hint variant="outlined" density="comfortable" class="mb-4"
+        :disabled="disabled" @update:model-value="$emit('update:buildkitColdHostPath', $event)"
+      />
       <v-alert
         v-if="cachePathWarning"
         class="mb-4"
@@ -249,6 +263,8 @@ const props = defineProps({
   cacheType: { type: String, default: 'bind' },
   cacheVolumeName: { type: String, default: '' },
   cacheHostPath: { type: String, default: '' },
+  buildkitHostPath: { type: String, default: '' },
+  buildkitColdHostPath: { type: String, default: '' },
   cacheTarget: { type: String, default: '/cache' },
   cacheReadOnly: { type: Boolean, default: false },
   workdirHostPath: { type: String, default: '' },
@@ -268,6 +284,8 @@ const emit = defineEmits([
   'update:cacheType',
   'update:cacheVolumeName',
   'update:cacheHostPath',
+  'update:buildkitHostPath',
+  'update:buildkitColdHostPath',
   'update:cacheTarget',
   'update:cacheReadOnly',
   'update:workdirHostPath',

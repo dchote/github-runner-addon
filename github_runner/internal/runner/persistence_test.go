@@ -233,3 +233,47 @@ func TestLegacyWorkVolumeName(t *testing.T) {
 		t.Fatalf("%s", got)
 	}
 }
+
+func TestBuildkitTieredPersistence(t *testing.T) {
+	c := &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/scratch/build-cache/project", BuildkitHostPath: "/scratch/buildkit-state", BuildkitColdHostPath: "/build-storage/buildkit-state"}
+	rec := store.Runner{Name: "tiered", Cache: c}
+	if err := validateCache(c); err != nil {
+		t.Fatal(err)
+	}
+	mounts := buildExtraMounts(rec, "")
+	for _, root := range []string{c.HostPath, c.BuildkitHostPath, c.BuildkitColdHostPath} {
+		found := false
+		for _, m := range mounts {
+			if m.Type == mount.TypeBind && m.Source == root && m.Target == root {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing same-path mount for %s: %+v", root, mounts)
+		}
+	}
+	env := strings.Join((&Manager{}).buildEnv(rec, "", "", "/scratch/work"), "\n")
+	for _, value := range []string{"RUNNER_BUILDKIT_ROOT=/scratch/buildkit-state", "RUNNER_BUILDKIT_COLD_ROOT=/build-storage/buildkit-state"} {
+		if !strings.Contains(env, value) {
+			t.Fatalf("missing %s", value)
+		}
+	}
+	c.BuildkitHostPath = "/"
+	if validateCache(c) == nil {
+		t.Fatal("unsafe state root accepted")
+	}
+}
+
+func TestBuildkitDefaultRootUsesExistingCacheMount(t *testing.T) {
+	c := &store.CacheConfig{Enabled: true, Type: "bind", HostPath: "/scratch/cache"}
+	if root := resolveBuildkitRoot(c); root != "/scratch/cache/buildkit-state" {
+		t.Fatal(root)
+	}
+	if mounts := buildExtraMounts(store.Runner{Cache: c}, ""); len(mounts) != 1 {
+		t.Fatalf("redundant cache mount: %+v", mounts)
+	}
+	c.Type = "volume"
+	if root := resolveBuildkitRoot(c); root != "" {
+		t.Fatal("container-only cache treated as host path")
+	}
+}
