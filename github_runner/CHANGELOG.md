@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0
+
+- **Tiered host storage for BuildKit caches.** Host-bind caches set `RUNNER_BUILDKIT_ROOT` (default `$RUNNER_CACHE/buildkit-state`) and same-path mount that directory. Optional `cache.buildkit_host_path` selects the active state root; `cache.buildkit_cold_host_path` selects a bulk root for builders whose names end in `-merge` or `-renderer`. Recreate an idle runner to apply a path change. Existing builder state is not moved or deleted.
+
 ## 0.7.1
 
 - **Check the runner image once a week.** `runner_image_refresh_days` (default `7`, `0` disables) controls how often running runners are pulled and rebuilt. The last check is saved, so restarting the addon does not start another rebuild. Start and Restart no longer pull a new image.
