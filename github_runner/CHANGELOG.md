@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1
 
 - **Check the runner image once a week.** `runner_image_refresh_days` (default `7`, `0` disables) controls how often running runners are pulled and rebuilt. The last check is saved, so restarting the addon does not start another rebuild. Start and Restart no longer pull a new image.
 
